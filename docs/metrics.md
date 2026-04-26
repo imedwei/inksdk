@@ -115,21 +115,35 @@ PerfCounters.prefix = "myapp.ink."
 This affects `PerfMetric.label` for every metric (e.g.
 `pen.kernel_to_paint` → `myapp.ink.pen.kernel_to_paint`).
 
-## Touch-IC wake — the irreducible cold first-stroke cost
+## Touch-IC wake — the per-pause first-stroke cost
 
-On the Bigme HiBreak Plus (Android 14, daemon v1.4.0) the very first stroke
-after a cold app launch — or after a long idle period with no stylus
-proximity — costs **100–170 ms** even though every JVM-side metric
-(`pen.jvm_to_paint`, `pen.move_to_paint`, `event.handler`, etc.) measures
-1–5 ms. The cost shows up in `pen.kernel_to_jvm`: kernel pen-down
-timestamp → daemon-binder → JVM `InputProxy.invoke` entry. Subsequent
-strokes pay 3–8 ms in this metric; only the first one pays 100+.
+On the Bigme HiBreak Plus (Android 14, daemon v1.4.0) every stroke
+**after the user has paused for ~1–2 seconds** pays an 80–170 ms
+wake-up cost in `pen.kernel_to_jvm`, while subsequent strokes within the
+same continuous-writing burst stay at 3–8 ms. The cost shows up
+exclusively in dispatch:
+
+```
+pen.kernel_to_paint = 80–130 ms     # the headline number the user perceives
+pen.kernel_to_jvm   = 78–129 ms     # ALL of it is dispatch
+pen.jvm_to_paint    = 0–1 ms        # JVM-side processing is fine
+```
+
+This is NOT a one-time cold-launch cost. We initially thought so, then
+caught it red-handed in mid-session benchmarks — for a 30-stroke run we
+typically see 4–8 strokes hitting `≥ 80 ms` while every other stroke is
+sub-10 ms. The `SLOW_STROKE` log line in `BigmeInkController` flags any
+stroke with `pen.kernel_to_paint ≥ 30 ms` and timestamps it; the slow
+strokes correlate with natural pauses in writing (between letters,
+words, after a glance away).
 
 **Cause** (verified empirically with the slim demo):
 
 - The touch IC drops into a low-sample-rate sleep state when nothing is
-  near the screen. Physical capacitive proximity (a stylus hovering 1–2 cm
-  above the panel) wakes it.
+  near the screen for ~1–2 seconds. Physical capacitive proximity (a
+  stylus hovering 1–2 cm above the panel) wakes it. Continuous writing
+  keeps it awake; lifting the pen all the way off the screen for a
+  beat lets it re-enter sleep.
 - The xrz `handwrittenservice` daemon **does not** dispatch hover /
   `ACTION_NEAR` events to the registered `InputListener` under any
   configuration we tried — neither the cooked path (with internal
@@ -140,19 +154,51 @@ strokes pay 3–8 ms in this metric; only the first one pays 100+.
 
 **Implications:**
 
-- Real users almost always hover before touching, so the IC is warm by the
-  time the pen actually contacts the screen. The cold case occurs only
-  when the pen is already in contact at app launch, or after a long idle
-  with the pen put down elsewhere.
+- A user writing continuously feels the device as fast — the wake fires
+  only at the start of each writing burst. A user that pauses to think,
+  glance away, or move between regions of the page will feel intermittent
+  ~100 ms lag on the *first stroke after each pause*, several times per
+  minute.
 - The library exposes no `prewarm()` API. The historic `ACTION_NEAR`
   pre-warm pattern from xNote / Mokke is dead code on this firmware.
-- For dashboards, the cold first stroke shows up as a single outlier in
-  `pen.kernel_to_paint`'s `max` while `p50`/`p95` stay tight. That
-  outlier is expected and not actionable.
+- For dashboards, focus on `pen.kernel_to_paint`'s `p99` and the
+  `SLOW_STROKE` log count, not p50/p95 — the per-pause wake hides in the
+  long tail.
 
-If a future firmware does start dispatching `NEAR` to InputListener, the
+If a future firmware starts dispatching `NEAR` to InputListener, the
 controller would record a sample in `event.kernel_to_jvm` for it — that's
 the signal to add a pre-warm path back.
+
+## UI-compose binder stall
+
+Per-second TextView updates (or any other on-screen redraw) during active
+writing can chronically inflate `event.kernel_to_jvm` from `p95 ≤ 2 ms`
+into the **70–100 ms** range. We caught this by A/B-ing the demo's
+benchmark countdown text:
+
+| | `event.kernel_to_jvm` p95 | `event.kernel_to_jvm` max |
+|---|---|---|
+| Per-second status text update | 76 ms | 94 ms |
+| No status text update | 1 ms | 2 ms |
+
+`event.kernel_to_jvm` is recorded for *every* binder input event, not
+just DOWN, so this captures the daemon's pen events being delayed
+end-to-end. The likely chain: TextView text change → View invalidate →
+SurfaceFlinger compose pass → EPD waveform queue activity → daemon's
+binder thread loses scheduling slot.
+
+**Implications for hosts:**
+
+- During active writing, *avoid* updating non-canvas UI on a high cadence.
+  A countdown timer, a constantly-updating word count, a spinner, an
+  animated loading indicator — anything that triggers a SurfaceFlinger
+  compose can throw 70–100 ms into the dispatch path.
+- This is *separate* from the touch-IC wake. The wake hits per-stroke after
+  a pause; the UI compose stall hits *every event* (including MOVEs) during
+  the redraw window. They compound.
+- If you must show progress during writing, drive it via the daemon's own
+  paint path (e.g. paint into the daemon's Canvas via `BigmeInkController`'s
+  diagnostic methods) rather than through the standard Android view tree.
 
 ## What we deliberately do *not* measure
 

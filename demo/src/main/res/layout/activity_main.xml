@@ -46,8 +46,18 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:layout_marginStart="4dp"
+            android:layout_marginEnd="4dp"
             android:textSize="13sp"
             android:text="Mirror: ON" />
+
+        <Button
+            android:id="@+id/btnTimer"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="4dp"
+            android:textSize="13sp"
+            android:text="Timer: ON" />
     </LinearLayout>
 
     <TextView

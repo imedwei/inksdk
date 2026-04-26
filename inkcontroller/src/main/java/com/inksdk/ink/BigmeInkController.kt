@@ -552,16 +552,30 @@ class BigmeInkController : InkController {
                                             // stroke isn't averaged out of the
                                             // ring-buffer percentiles.
                                             val sIdx = strokeIndex.get()
+                                            val jvmToPaintMs = (invEnd - downStartNs) / 1_000_000
+                                            val jvmToFirstMoveMs = (firstMoveArrivalNs - downStartNs) / 1_000_000
+                                            val moveToPaintMs = (invEnd - firstMoveArrivalNs) / 1_000_000
                                             if (sIdx <= 10) {
-                                                val k2j = if (downKernelWallNs != 0L)
-                                                    (System.currentTimeMillis() * 1_000_000L - downKernelWallNs) / 1_000_000
-                                                else -1
                                                 android.util.Log.i(TAG,
                                                     "FIRST_STROKE #$sIdx: " +
                                                         "kernel_to_paint=${k2pMs}ms " +
-                                                        "jvm_to_paint=${(invEnd - downStartNs) / 1_000_000}ms " +
-                                                        "jvm_to_first_move=${(firstMoveArrivalNs - downStartNs) / 1_000_000}ms " +
-                                                        "move_to_paint=${(invEnd - firstMoveArrivalNs) / 1_000_000}ms")
+                                                        "jvm_to_paint=${jvmToPaintMs}ms " +
+                                                        "jvm_to_first_move=${jvmToFirstMoveMs}ms " +
+                                                        "move_to_paint=${moveToPaintMs}ms")
+                                            }
+                                            // Always log strokes whose wall-clock first-paint
+                                            // latency crosses SLOW_STROKE_MS, with wall-clock
+                                            // HH:mm:ss.SSS timestamp so the user can correlate
+                                            // outliers against external events (timer ticks,
+                                            // GC pauses, panel waveform refreshes, etc.).
+                                            if (k2pMs >= SLOW_STROKE_MS) {
+                                                android.util.Log.i(TAG,
+                                                    "SLOW_STROKE #$sIdx @${wallClockHms()}: " +
+                                                        "kernel_to_paint=${k2pMs}ms " +
+                                                        "kernel_to_jvm=${k2pMs - jvmToPaintMs}ms " +
+                                                        "jvm_to_paint=${jvmToPaintMs}ms " +
+                                                        "jvm_to_first_move=${jvmToFirstMoveMs}ms " +
+                                                        "move_to_paint=${moveToPaintMs}ms")
                                             }
                                         }
                                         accumDirty.set(Int.MAX_VALUE, Int.MAX_VALUE, Int.MIN_VALUE, Int.MIN_VALUE)
@@ -640,6 +654,14 @@ class BigmeInkController : InkController {
             }
             return canvasBitmapFieldCached
         }
+
+        // Latency threshold (ms) above which a stroke is logged as a
+        // SLOW_STROKE. Tuned to ~10× the warm p95 — anything past this is
+        // worth correlating against external events.
+        private const val SLOW_STROKE_MS = 30L
+
+        private val wallClockFormatter = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US)
+        private fun wallClockHms(): String = wallClockFormatter.format(System.currentTimeMillis())
 
         const val ACTION_NEAR = 0
         const val ACTION_DOWN = 1

@@ -27,6 +27,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnClear: Button
     private lateinit var btnDump: Button
     private lateinit var btnMirror: Button
+    private lateinit var btnTimer: Button
+    private var timerEnabled: Boolean = true
     private lateinit var perfPanel: ScrollView
     private lateinit var perfHeadline: TextView
     private lateinit var perfFooter: TextView
@@ -42,6 +44,7 @@ class MainActivity : AppCompatActivity() {
         // Persisted Mirror flag, applied BEFORE surfaceCreated fires.
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         ink.mirrorEnabled = prefs.getBoolean(PREF_MIRROR, true)
+        timerEnabled = prefs.getBoolean(PREF_TIMER, true)
         status = findViewById(R.id.txtStatus)
         btnBenchmark = findViewById(R.id.btnBenchmark)
         btnClear = findViewById(R.id.btnClear)
@@ -53,6 +56,14 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(PREF_MIRROR, newValue).apply()
             Log.i(TAG, "Mirror toggled to $newValue — recreating activity")
             recreate()
+        }
+        btnTimer = findViewById(R.id.btnTimer)
+        btnTimer.text = if (timerEnabled) "Timer: ON" else "Timer: OFF"
+        btnTimer.setOnClickListener {
+            timerEnabled = !timerEnabled
+            prefs.edit().putBoolean(PREF_TIMER, timerEnabled).apply()
+            btnTimer.text = if (timerEnabled) "Timer: ON" else "Timer: OFF"
+            Log.i(TAG, "Timer toggled to $timerEnabled (no restart needed)")
         }
 
         btnBenchmark.setOnClickListener {
@@ -102,6 +113,7 @@ class MainActivity : AppCompatActivity() {
         btnDump.isEnabled = false
         benchmarkTimer = object : CountDownTimer(30_000L, 1_000L) {
             override fun onTick(msUntilFinished: Long) {
+                if (!timerEnabled) return
                 val s = ((msUntilFinished + 999) / 1_000).toInt()
                 status.text = "Recording — write now! ${s}s left"
             }
@@ -109,7 +121,8 @@ class MainActivity : AppCompatActivity() {
                 stopBenchmark(showResults = true)
             }
         }.start()
-        status.text = "Recording — write now! 30s left"
+        status.text = if (timerEnabled) "Recording — write now! 30s left"
+                      else "Recording — write now! (no countdown)"
     }
 
     private fun stopBenchmark(showResults: Boolean) {
@@ -249,5 +262,6 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "MainActivity"
         private const val PREFS = "inksdk-demo"
         private const val PREF_MIRROR = "mirror_enabled"
+        private const val PREF_TIMER = "timer_enabled"
     }
 }
