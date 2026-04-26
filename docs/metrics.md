@@ -239,15 +239,40 @@ JVM-side moment that a vendor SDK doesn't expose.
 | Metric | Bigme | Onyx | Reason for Onyx gap |
 |---|---|---|---|
 | `pen.kernel_to_paint` | ✅ | ❌ | TouchHelper paints in native code; no JVM-observable "first paint issued" moment. |
-| `pen.kernel_to_jvm` | ✅ | ✅ *(planned)* | `TouchPoint.timestamp` (uptimeMillis) gives the equivalent of the daemon's CLOCK_REALTIME. |
+| `pen.kernel_to_jvm` | ✅ | ✅ | `TouchPoint.timestamp` (uptimeMillis) gives the equivalent of the daemon's CLOCK_REALTIME. |
 | `pen.jvm_to_paint` | ✅ | ❌ | Same as `pen.kernel_to_paint`: no JVM "paint issued" boundary on Onyx. |
-| `pen.jvm_to_first_move` | ✅ | ✅ *(planned)* | `onBeginRawDrawing` → first `onRawDrawingTouchPointMoveReceived`. |
+| `pen.jvm_to_first_move` | ✅ | ✅ | `onBeginRawDrawing` → first `onRawDrawingTouchPointMoveReceived`. |
 | `pen.move_to_paint` | ✅ | ❌ | No paint boundary. |
-| `event.kernel_to_jvm` | ✅ | ✅ *(planned)* | Per-callback dispatch latency from `tp.timestamp`. |
-| `event.handler` | ✅ | ✅ *(planned)* | Wall time of each `RawInputCallback` body. |
+| `event.kernel_to_jvm` | ✅ | ✅ | Per-callback dispatch latency from `tp.timestamp`. |
+| `event.handler` | ✅ | ✅ | Wall time of each `RawInputCallback` body. |
 | `paint.draw_segment` | ✅ | ❌ | We don't issue draw calls under Onyx. |
 | `paint.invalidate_call` | ✅ | ❌ | We don't issue invalidates under Onyx. |
 
-"*(planned)*" entries are not yet wired in `OnyxInkController`; they will
-populate the same enum entries when wired (no schema change). All
-percentile snapshots silently report `count=0` for unrecorded metrics.
+All percentile snapshots silently report `count=0` for metrics that the
+active controller cannot record — hosts can iterate `PerfCounters.snapshot()`
+unconditionally without per-controller branching.
+
+### Onyx timeline
+
+The same pen-down → ink pipeline, but with the spans Onyx's vendor SDK
+hides drawn in grey:
+
+![Onyx pen-down to ink-on-screen latency journey, with metric coverage](metrics-timeline-onyx.svg)
+
+Source: [`metrics-timeline-onyx.svg`](metrics-timeline-onyx.svg).
+
+**Why some metrics aren't recordable on Onyx.** Onyx's `TouchHelper`
+swallows touch input and paints strokes inside the vendor SDK's native
+code — we never see a JVM-side "draw issued" or "invalidate returned"
+moment, so the four `pen.*_to_paint` / `paint.*` metrics that hinge on
+that boundary cannot be filled. The four metrics rooted in the
+`RawInputCallback` boundaries (DOWN entry, MOVE entry, dispatch latency,
+handler wall time) port across cleanly — `TouchPoint.timestamp` is in
+the `SystemClock.uptimeMillis()` epoch, which pairs with
+`SystemClock.uptimeMillis()` at callback entry the same way Bigme's
+daemon CLOCK_REALTIME pairs with `System.currentTimeMillis()`.
+
+The `SLOW_STROKE` log line on Onyx uses `pen.kernel_to_jvm` as its
+proxy headline (since `pen.kernel_to_paint` doesn't exist there); the
+threshold is the same 30 ms cutoff so logs are comparable across
+devices.

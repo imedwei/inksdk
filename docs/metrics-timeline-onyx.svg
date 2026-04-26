@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">
+  <title>Onyx pen-down to ink-on-screen latency journey, with metric coverage</title>
+
+  <!-- Title -->
+  <text x="490" y="28" text-anchor="middle" font-size="18" font-weight="700" font-family="system-ui, Helvetica, sans-serif">Onyx pen-down → ink-on-screen, with metric coverage</text>
+  <text x="490" y="50" text-anchor="middle" font-size="12" fill="#666" font-family="system-ui, Helvetica, sans-serif">Time flows left → right. Greyed regions are not measurable from the JVM on Onyx.</text>
+
+  <!-- Stage labels (above the timeline) -->
+  <g font-size="11" text-anchor="middle">
+    <text x="60"  y="100" fill="#888">A. Pen tip</text><text x="60"  y="115" fill="#888">touches glass</text>
+    <text x="190" y="100">B. Kernel writes</text><text x="190" y="115">/dev/input event</text>
+    <text x="320" y="100">C. JVM receives</text><text x="320" y="115">DOWN event</text>
+    <text x="500" y="100">D. JVM receives</text><text x="500" y="115">first MOVE</text>
+    <text x="640" y="100" fill="#888">E. Onyx SDK</text><text x="640" y="115" fill="#888">paints (native)</text>
+    <text x="770" y="100" fill="#888">F. SDK signals</text><text x="770" y="115" fill="#888">EPD (native)</text>
+    <text x="900" y="100" fill="#888">G. EPD ink</text><text x="900" y="115" fill="#888">visible</text>
+  </g>
+
+  <!-- Tick marks on the timeline -->
+  <g stroke="#333" stroke-width="1.5">
+    <line x1="60"  y1="135" x2="60"  y2="155"/>
+    <line x1="190" y1="135" x2="190" y2="155"/>
+    <line x1="320" y1="135" x2="320" y2="155"/>
+    <line x1="500" y1="135" x2="500" y2="155"/>
+    <line x1="640" y1="135" x2="640" y2="155" stroke="#aaa"/>
+    <line x1="770" y1="135" x2="770" y2="155" stroke="#aaa"/>
+    <line x1="900" y1="135" x2="900" y2="155" stroke="#aaa"/>
+  </g>
+
+  <!-- Timeline axis -->
+  <line x1="20" y1="145" x2="960" y2="145" stroke="#333" stroke-width="2"/>
+
+  <!-- Greyed regions for unmeasurable spans:
+       - before B (kernel/hardware)
+       - after D (Onyx SDK owns paint in native code, no JVM observable boundary) -->
+  <rect x="20"  y="138" width="170" height="14" fill="#000" fill-opacity="0.06"/>
+  <rect x="500" y="138" width="460" height="14" fill="#000" fill-opacity="0.10"/>
+  <text x="730" y="172" text-anchor="middle" font-size="11" fill="#888" font-style="italic">(no JVM-observable paint boundary on Onyx)</text>
+
+  <!-- HEADLINE METRIC SLOT (no Onyx headline) -->
+  <g>
+    <line x1="190" y1="200" x2="500" y2="200" stroke="#c0392b" stroke-width="3"/>
+    <line x1="190" y1="193" x2="190" y2="207" stroke="#c0392b" stroke-width="3"/>
+    <line x1="500" y1="193" x2="500" y2="207" stroke="#c0392b" stroke-width="3"/>
+    <text x="345" y="190" text-anchor="middle" font-weight="700" fill="#c0392b" font-size="14">(no end-to-end headline on Onyx)</text>
+    <text x="345" y="220" text-anchor="middle" fill="#666" font-size="11">Onyx SDK paints in native code — pen.kernel_to_paint cannot be recorded.</text>
+    <text x="345" y="234" text-anchor="middle" fill="#666" font-size="11">SLOW_STROKE log uses pen.kernel_to_jvm as the proxy headline.</text>
+  </g>
+
+  <!-- pen.kernel_to_jvm (B → C) — MEASURED -->
+  <g stroke="#1e6dc6">
+    <line x1="190" y1="265" x2="320" y2="265" stroke-width="3"/>
+    <line x1="190" y1="260" x2="190" y2="270" stroke-width="3"/>
+    <line x1="320" y1="260" x2="320" y2="270" stroke-width="3"/>
+  </g>
+  <text x="255" y="283" text-anchor="middle" fill="#1e6dc6" font-size="11" font-weight="700">pen.kernel_to_jvm ✓</text>
+
+  <!-- pen.jvm_to_paint (C → F) — NOT measurable on Onyx (greyed dashed) -->
+  <g stroke="#bbb" stroke-dasharray="3 3">
+    <line x1="320" y1="265" x2="770" y2="265" stroke-width="2"/>
+    <line x1="320" y1="260" x2="320" y2="270" stroke-width="2"/>
+    <line x1="770" y1="260" x2="770" y2="270" stroke-width="2"/>
+  </g>
+  <text x="545" y="283" text-anchor="middle" fill="#999" font-size="11" font-style="italic">pen.jvm_to_paint (n/a)</text>
+
+  <!-- pen.jvm_to_first_move (C → D) — MEASURED -->
+  <g stroke="#3498db">
+    <line x1="320" y1="315" x2="500" y2="315" stroke-width="3"/>
+    <line x1="320" y1="310" x2="320" y2="320" stroke-width="3"/>
+    <line x1="500" y1="310" x2="500" y2="320" stroke-width="3"/>
+  </g>
+  <text x="410" y="333" text-anchor="middle" fill="#3498db" font-size="11" font-weight="700">pen.jvm_to_first_move ✓</text>
+
+  <!-- pen.move_to_paint (D → F) — NOT measurable on Onyx -->
+  <g stroke="#bbb" stroke-dasharray="3 3">
+    <line x1="500" y1="315" x2="770" y2="315" stroke-width="2"/>
+    <line x1="500" y1="310" x2="500" y2="320" stroke-width="2"/>
+    <line x1="770" y1="310" x2="770" y2="320" stroke-width="2"/>
+  </g>
+  <text x="635" y="333" text-anchor="middle" fill="#999" font-size="11" font-style="italic">pen.move_to_paint (n/a)</text>
+
+  <!-- event.kernel_to_jvm (per-event) — MEASURED -->
+  <g stroke="#27ae60" stroke-dasharray="6 3">
+    <line x1="190" y1="365" x2="320" y2="365" stroke-width="2"/>
+    <line x1="190" y1="360" x2="190" y2="370" stroke-width="2"/>
+    <line x1="320" y1="360" x2="320" y2="370" stroke-width="2"/>
+  </g>
+  <text x="255" y="383" text-anchor="middle" fill="#27ae60" font-size="11" font-weight="700">event.kernel_to_jvm ✓</text>
+  <text x="255" y="397" text-anchor="middle" fill="#27ae60" font-size="10" font-style="italic">(once per event)</text>
+
+  <!-- event.handler (per-event) — MEASURED -->
+  <g stroke="#27ae60" stroke-dasharray="6 3">
+    <line x1="320" y1="415" x2="345" y2="415" stroke-width="2"/>
+    <line x1="320" y1="410" x2="320" y2="420" stroke-width="2"/>
+    <line x1="345" y1="410" x2="345" y2="420" stroke-width="2"/>
+  </g>
+  <text x="350" y="418" fill="#27ae60" font-size="11" font-weight="700">event.handler ✓ &#160;<tspan font-weight="400">(RawInputCallback body, fires per event)</tspan></text>
+
+  <!-- paint.draw_segment — NOT measurable on Onyx -->
+  <g stroke="#bbb" stroke-dasharray="3 3">
+    <line x1="610" y1="445" x2="640" y2="445" stroke-width="2"/>
+    <line x1="610" y1="440" x2="610" y2="450" stroke-width="2"/>
+    <line x1="640" y1="440" x2="640" y2="450" stroke-width="2"/>
+  </g>
+  <text x="625" y="463" text-anchor="middle" fill="#999" font-size="11" font-style="italic">paint.draw_segment (n/a)</text>
+
+  <!-- paint.invalidate_call — NOT measurable on Onyx -->
+  <g stroke="#bbb" stroke-dasharray="3 3">
+    <line x1="700" y1="445" x2="770" y2="445" stroke-width="2"/>
+    <line x1="700" y1="440" x2="700" y2="450" stroke-width="2"/>
+    <line x1="770" y1="440" x2="770" y2="450" stroke-width="2"/>
+  </g>
+  <text x="735" y="463" text-anchor="middle" fill="#999" font-size="11" font-style="italic">paint.invalidate_call (n/a)</text>
+
+  <!-- Coverage summary -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">
+    <rect x="40" y="490" width="900" height="80" fill="#f6f7f8" stroke="#ddd"/>
+    <text x="55" y="512" font-weight="700">Onyx coverage: 4 of 9 metrics</text>
+    <text x="55" y="532">measured: pen.kernel_to_jvm, pen.jvm_to_first_move, event.kernel_to_jvm, event.handler</text>
+    <text x="55" y="550" fill="#999">n/a:      pen.kernel_to_paint, pen.jvm_to_paint, pen.move_to_paint, paint.draw_segment, paint.invalidate_call</text>
+    <text x="55" y="565" fill="#666" font-size="11">// Onyx's TouchHelper paints inside the vendor SDK's native code — there is no JVM moment to time post-MOVE.</text>
+  </g>
+
+  <!-- Legend -->
+  <g font-family="system-ui, Helvetica, sans-serif" font-size="11">
+    <text x="800" y="385" font-weight="700">Legend</text>
+    <line x1="800" y1="400" x2="830" y2="400" stroke="#1e6dc6" stroke-width="3"/>
+    <text x="836" y="404">pen.* (per stroke)</text>
+    <line x1="800" y1="415" x2="830" y2="415" stroke="#27ae60" stroke-width="2" stroke-dasharray="6 3"/>
+    <text x="836" y="419">event.* (per event)</text>
+    <line x1="800" y1="430" x2="830" y2="430" stroke="#bbb" stroke-width="2" stroke-dasharray="3 3"/>
+    <text x="836" y="434">not measurable</text>
+  </g>
+</svg>
