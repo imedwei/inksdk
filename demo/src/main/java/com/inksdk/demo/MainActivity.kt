@@ -49,6 +49,12 @@ class MainActivity : AppCompatActivity() {
     private var timerHzRunnable: Runnable? = null
     /** Mode label captured at benchmark start, used to tag the perf dump. */
     private var currentBenchmarkLabel: String = ""
+    /** Wall-clock at benchmark start (uptimeMillis). 0 = no benchmark. */
+    private var benchmarkStartUptimeMs: Long = 0L
+    /** Elapsed wall-clock of the most recent benchmark, captured at stop.
+     *  Reads as <30 000 ms when the user tapped Stop early. */
+    private var benchmarkElapsedMs: Long = 0L
+    private val benchmarkTargetMs: Long = 30_000L
     private lateinit var perfPanel: ScrollView
     private lateinit var perfHeadline: TextView
     private lateinit var perfFooter: TextView
@@ -96,6 +102,8 @@ class MainActivity : AppCompatActivity() {
             // resets controller-side diagnostics (stroke index).
             PerfCounters.reset()
             perfPanel.visibility = View.GONE
+            // Resume raw drawing in case stopBenchmark paused it (Onyx flow).
+            ink.setOverlayEnabled(true)
             status.text = "Cleared — counters and diagnostics reset"
             refreshStatusOnEpd()
         }
@@ -109,6 +117,11 @@ class MainActivity : AppCompatActivity() {
         perfTable = findViewById(R.id.tblPerf)
         findViewById<Button>(R.id.btnDismissPerf).setOnClickListener {
             perfPanel.visibility = View.GONE
+            // Resume raw drawing — stopBenchmark paused it so the perf
+            // overlay would actually show on Onyx.
+            ink.setOverlayEnabled(true)
+            status.text = if (ink.isOverlayActive()) "overlay active" else "fallback (Canvas)"
+            refreshStatusOnEpd()
         }
 
         ink.post {
@@ -185,6 +198,8 @@ class MainActivity : AppCompatActivity() {
         perfPanel.visibility = View.GONE
         benchmarking = true
         currentBenchmarkLabel = timerLabel()
+        benchmarkStartUptimeMs = android.os.SystemClock.uptimeMillis()
+        benchmarkElapsedMs = 0L
         Log.i(TAG, "─── BENCHMARK START [$currentBenchmarkLabel] ───")
         btnBenchmark.text = "Stop"
         btnClear.isEnabled = false
@@ -235,10 +250,19 @@ class MainActivity : AppCompatActivity() {
         timerHzRunnable = null
         timerHzHandler = null
         benchmarking = false
+        benchmarkElapsedMs = if (benchmarkStartUptimeMs > 0L)
+            android.os.SystemClock.uptimeMillis() - benchmarkStartUptimeMs else 0L
         btnBenchmark.text = "Bench 30s"
         btnClear.isEnabled = true
         btnDump.isEnabled = true
-        status.text = if (ink.isOverlayActive()) "overlay active" else "fallback (Canvas)"
+        // Onyx: TouchHelper monopolises the EPD waveform engine while raw
+        // drawing is enabled, so view-tree composes (status text, the perf
+        // panel) don't visibly land. Pause raw drawing here so the queued
+        // SurfaceFlinger composes drain to the panel and the user can
+        // actually see the benchmark completed + the perf overlay.
+        // Resumed by the perf-panel dismiss button or the Clear button.
+        ink.setOverlayEnabled(false)
+        status.text = "Bench complete — tap Clear to write again"
         refreshStatusOnEpd()
         if (showResults) showPerfPanel()
     }
@@ -253,13 +277,34 @@ class MainActivity : AppCompatActivity() {
     private fun showPerfPanel() {
         val snap = PerfCounters.snapshot()
 
-        val headline = snap[PerfMetric.PEN_KERNEL_TO_PAINT]
-        perfHeadline.text = if (headline == null || headline.count == 0L) {
-            "pen.kernel_to_paint — no samples yet"
-        } else {
-            "pen.kernel_to_paint — n=${headline.count}  " +
-                "p50=${headline.p50Ms}ms  p95=${headline.p95Ms}ms  max=${headline.maxMs}ms"
+        // Capture window: how long this perf snapshot actually represents.
+        // Tapping Stop early (before the 30 s timer fires) means the
+        // counters reflect a partial window — call that out at the top so
+        // small samples aren't mistaken for the steady-state distribution.
+        val targetMs = benchmarkTargetMs
+        val actualMs = benchmarkElapsedMs
+        val partial = actualMs in 1L until (targetMs - 500L)
+        val captureLine = when {
+            actualMs == 0L -> "Capture window: ad-hoc dump (no benchmark)"
+            partial -> "⚠️  PARTIAL CAPTURE — ${"%.1f".format(actualMs / 1000.0)}s of " +
+                "${targetMs / 1000}s (Stop tapped early)"
+            else -> "Capture window: ${"%.1f".format(actualMs / 1000.0)}s"
         }
+
+        // Headline: prefer pen.kernel_to_paint (Bigme), fall back to
+        // pen.kernel_to_jvm (Onyx — paint boundary is not measurable).
+        val k2p = snap[PerfMetric.PEN_KERNEL_TO_PAINT]
+        val k2j = snap[PerfMetric.PEN_KERNEL_TO_JVM]
+        val headlineLine = when {
+            k2p != null && k2p.count > 0L ->
+                "pen.kernel_to_paint — n=${k2p.count}  " +
+                    "p50=${k2p.p50Ms}ms  p95=${k2p.p95Ms}ms  max=${k2p.maxMs}ms"
+            k2j != null && k2j.count > 0L ->
+                "pen.kernel_to_jvm (Onyx proxy) — n=${k2j.count}  " +
+                    "p50=${k2j.p50Ms}ms  p95=${k2j.p95Ms}ms  max=${k2j.maxMs}ms"
+            else -> "no headline samples yet"
+        }
+        perfHeadline.text = "$captureLine\n$headlineLine"
 
         perfTable.removeAllViews()
 
@@ -295,7 +340,11 @@ class MainActivity : AppCompatActivity() {
         // without a screen capture.
         val label = if (currentBenchmarkLabel.isNotEmpty()) " [$currentBenchmarkLabel]" else ""
         Log.i(TAG, "─── PERF DUMP$label ───")
-        Log.i(TAG, perfHeadline.text.toString())
+        if (partial) {
+            Log.w(TAG, "PARTIAL CAPTURE: ${"%.1f".format(actualMs / 1000.0)}s of " +
+                "${targetMs / 1000}s — counters reflect an incomplete window")
+        }
+        Log.i(TAG, perfHeadline.text.toString().replace("\n", " | "))
         for ((m, s) in snap) {
             if (s.count == 0L) continue
             Log.i(TAG, String.format("%-32s n=%-7d p50=%-4dms p95=%-4dms max=%-4dms",

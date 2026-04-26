@@ -239,6 +239,13 @@ class InkSurfaceView @JvmOverloads constructor(
 
     fun isOverlayActive(): Boolean = ink.isActive
 
+    /** Pause/resume the underlying [InkController] without detaching.
+     *  On Onyx this releases TouchHelper's grip on the EPD waveform engine
+     *  so view-tree composes (status text, perf panel) drain to the
+     *  panel; on Bigme it just stops the daemon dispatching input events.
+     *  Distinct name from [View.setEnabled] to avoid disabling the view. */
+    fun setOverlayEnabled(enabled: Boolean) = ink.setEnabled(enabled)
+
     /** Inject a synthetic stroke for tests. Drives the public StrokeCallback. */
     fun injectStrokeForTest(points: List<Triple<Float, Float, Long>>) {
         if (points.size < 2) return
