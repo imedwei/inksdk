@@ -23,6 +23,18 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var ink: InkSurfaceView
     private lateinit var status: TextView
+    /** True iff the device is Onyx (i.e. raw-drawing mode owns the EPD and
+     *  view-tree updates outside the limit rect won't refresh the panel
+     *  without an explicit EpdController.invalidate). */
+    private var onyxRefreshNeeded: Boolean = false
+    /** Background thread for EPD refresh calls. The blocking
+     *  `EpdController.refreshScreen` variant is the only call that
+     *  reliably forces a panel update during active TouchHelper raw
+     *  drawing — but it can wait many hundreds of ms for the waveform
+     *  engine. Running it on a background thread keeps the main-thread
+     *  CountDownTimer alive and the benchmark auto-stop honest. */
+    private var epdRefreshThread: android.os.HandlerThread? = null
+    private var epdRefreshHandler: android.os.Handler? = null
     private lateinit var btnBenchmark: Button
     private lateinit var btnClear: Button
     private lateinit var btnDump: Button
@@ -85,6 +97,7 @@ class MainActivity : AppCompatActivity() {
             PerfCounters.reset()
             perfPanel.visibility = View.GONE
             status.text = "Cleared — counters and diagnostics reset"
+            refreshStatusOnEpd()
         }
         btnDump.setOnClickListener {
             if (perfPanel.visibility == View.VISIBLE) perfPanel.visibility = View.GONE
@@ -99,14 +112,69 @@ class MainActivity : AppCompatActivity() {
         }
 
         ink.post {
+            // Onyx detection: brand match + overlay attached confirms TouchHelper
+            // is in raw-drawing mode and we need to push the EPD ourselves on
+            // every status text change.
+            onyxRefreshNeeded = ink.isOverlayActive() &&
+                android.os.Build.MANUFACTURER.equals("ONYX", ignoreCase = true)
+            if (onyxRefreshNeeded) startEpdRefreshThread()
             status.text = if (ink.isOverlayActive()) "overlay active" else "fallback (Canvas)"
+            refreshStatusOnEpd()
         }
+    }
+
+    private fun startEpdRefreshThread() {
+        if (epdRefreshThread != null) return
+        val t = android.os.HandlerThread("EpdRefresh").apply { start() }
+        epdRefreshThread = t
+        epdRefreshHandler = android.os.Handler(t.looper)
     }
 
     override fun onDestroy() {
         benchmarkTimer?.cancel()
+        epdRefreshThread?.quitSafely()
+        epdRefreshThread = null
+        epdRefreshHandler = null
         super.onDestroy()
     }
+
+    /** On Onyx in raw-drawing mode, view-tree updates outside the TouchHelper
+     *  limit rect don't push to the panel — the EPD waveform engine is busy
+     *  servicing the ink path. Call this after every status.text change so
+     *  the toolbar/status area visibly refreshes. No-op on non-Onyx hardware
+     *  (Bigme's xrz daemon and the Noop fallback both leave SurfaceFlinger
+     *  free to refresh background views).
+     *
+     *  We tried [com.onyx.android.sdk.api.device.epd.EpdController.postInvalidate]
+     *  first — it returns immediately but the invalidate gets coalesced
+     *  with the SurfaceView's pending refresh, which never lands because
+     *  TouchHelper owns it.
+     *
+     *  [com.onyx.android.sdk.api.device.epd.EpdController.refreshScreen]
+     *  bypasses the View invalidate path and tells the EPD HAL to flip
+     *  the panel pixels for [status] directly. It's blocking — can wait
+     *  hundreds of ms for the waveform engine while raw drawing is hot —
+     *  so we run it on a dedicated background HandlerThread to keep the
+     *  main-thread CountDownTimer ticking and the benchmark auto-stop
+     *  honest. */
+    private fun refreshStatusOnEpd() {
+        if (!onyxRefreshNeeded) return
+        val handler = epdRefreshHandler ?: return
+        // Coalesce: drop pending refreshes — only the latest text matters.
+        handler.removeCallbacksAndMessages(null)
+        handler.post {
+            try {
+                com.onyx.android.sdk.api.device.epd.EpdController.refreshScreen(
+                    status,
+                    com.onyx.android.sdk.api.device.epd.UpdateMode.DU,
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "EpdController.refreshScreen failed: ${t.message}")
+                onyxRefreshNeeded = false
+            }
+        }
+    }
+
 
     /** Reset counters and clear the canvas, then run a 30 s descending timer
      *  during which the user writes continuously. Auto-show results on
@@ -126,6 +194,7 @@ class MainActivity : AppCompatActivity() {
                 if (timerMode != 1) return  // 1Hz path; 30Hz uses a separate handler
                 val s = ((msUntilFinished + 999) / 1_000).toInt()
                 status.text = "Recording — write now! ${s}s left"
+                refreshStatusOnEpd()
             }
             override fun onFinish() {
                 stopBenchmark(showResults = true)
@@ -143,6 +212,7 @@ class MainActivity : AppCompatActivity() {
                 override fun run() {
                     if (!benchmarking) return
                     status.text = "Recording — counter=${counter++} (30Hz)"
+                    refreshStatusOnEpd()
                     handler.postDelayed(this, 33L)
                 }
             }
@@ -155,6 +225,7 @@ class MainActivity : AppCompatActivity() {
             2 -> "Recording — counter=0 (30Hz)"
             else -> "Recording…"
         }
+        refreshStatusOnEpd()
     }
 
     private fun stopBenchmark(showResults: Boolean) {
@@ -168,6 +239,7 @@ class MainActivity : AppCompatActivity() {
         btnClear.isEnabled = true
         btnDump.isEnabled = true
         status.text = if (ink.isOverlayActive()) "overlay active" else "fallback (Canvas)"
+        refreshStatusOnEpd()
         if (showResults) showPerfPanel()
     }
 

@@ -29,6 +29,21 @@ interface InkController {
      *  while MotionEvents still flow through `View.onTouchEvent`. */
     val consumesMotionEvents: Boolean
 
+    /** True iff the overlay owns the host SurfaceView's surface while
+     *  active — i.e. the host MUST NOT call `holder.lockCanvas()` /
+     *  `unlockCanvasAndPost()` while writing.
+     *
+     *  Onyx's `TouchHelper` runs raw drawing directly on the SurfaceView,
+     *  so any host-side `lockCanvas` blocks forever waiting for a lock
+     *  TouchHelper never releases — wedging not just the host's draw thread
+     *  but also SurfaceFlinger and the main thread (timers stop ticking,
+     *  the activity becomes unresponsive).
+     *
+     *  Bigme's daemon paints into a separate ION buffer that floats above
+     *  SurfaceFlinger — the host's surface and the daemon's overlay are
+     *  independent compositors, so host commits coexist fine. Default false. */
+    val ownsSurface: Boolean get() = false
+
     /** Attach the overlay to [view] with [limit] as the visible/allowed
      *  drawing rect (in view-local pixels). Returns true iff the overlay is
      *  now active. On false, the caller should use its MotionEvent fallback. */

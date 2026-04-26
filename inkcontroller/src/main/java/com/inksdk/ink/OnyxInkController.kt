@@ -46,6 +46,11 @@ class OnyxInkController : InkController {
 
     override val consumesMotionEvents: Boolean get() = isActive
 
+    // TouchHelper runs raw drawing directly on the host SurfaceView and
+    // holds its surface lock — host-side `holder.lockCanvas()` while
+    // active will block indefinitely.
+    override val ownsSurface: Boolean get() = isActive
+
     private var touchHelper: TouchHelper? = null
     private var pendingWidth: Float = InkDefaults.DEFAULT_STROKE_WIDTH_PX
     private var pendingColor: Int = InkDefaults.DEFAULT_STROKE_COLOR
@@ -132,19 +137,53 @@ class OnyxInkController : InkController {
     private fun makeRawInputCallback(sink: StrokeCallback) = object : RawInputCallback() {
 
         // DOWN-side state captured for first-MOVE delta. nanoTime() is
-        // monotonic; uptimeMillis() pairs with TouchPoint.timestamp for the
-        // kernel→JVM cross-clock measurements.
+        // monotonic; the cross-clock pairing for kernel_to_jvm is auto-
+        // detected (uptime vs wall) on the first event with a positive ts.
         private var downJvmNs = 0L
         private var firstMoveOfStroke = false
+        private var dispatchEpoch: DispatchEpoch = DispatchEpoch.UNKNOWN
+        private var dispatchProbeCount = 0
 
-        // Cross-clock dispatch latency: TouchPoint.timestamp is set by the
-        // SDK when the input event is delivered, in the SystemClock.uptimeMillis
-        // epoch. Subtract from now to get kernel/SDK→JVM hop. Recorded for
-        // every event for parity with Bigme's event.kernel_to_jvm.
+        // Cross-clock dispatch latency. TouchPoint.timestamp epoch varies
+        // between Onyx firmwares — some populate uptimeMillis, some
+        // currentTimeMillis, some leave it at 0. We auto-detect on the
+        // first event by computing the delta against both clocks and
+        // picking whichever is non-negative and small (< 60 s) — that's
+        // the active epoch. Subsequent events use the locked epoch with
+        // no per-event reflection or branching cost.
         private fun recordDispatch(tp: TouchPoint, metric: PerfMetric) {
             val tsMs = tp.timestamp
-            if (tsMs <= 0L) return
-            val deltaMs = SystemClock.uptimeMillis() - tsMs
+            if (tsMs <= 0L) {
+                if (dispatchEpoch == DispatchEpoch.UNKNOWN && dispatchProbeCount < 3) {
+                    dispatchProbeCount++
+                    Log.i(TAG, "dispatch probe: tp.timestamp=0 (sdk did not populate)")
+                    if (dispatchProbeCount == 3) {
+                        dispatchEpoch = DispatchEpoch.UNAVAILABLE
+                        Log.w(TAG, "dispatch metrics disabled — TouchPoint.timestamp not populated by Onyx SDK")
+                    }
+                }
+                return
+            }
+            if (dispatchEpoch == DispatchEpoch.UNKNOWN) {
+                val uptimeNow = SystemClock.uptimeMillis()
+                val wallNow = System.currentTimeMillis()
+                val uptimeDelta = uptimeNow - tsMs
+                val wallDelta = wallNow - tsMs
+                Log.i(TAG, "dispatch probe: tp.ts=$tsMs uptimeNow=$uptimeNow wallNow=$wallNow " +
+                    "uptimeDelta=${uptimeDelta}ms wallDelta=${wallDelta}ms")
+                dispatchEpoch = when {
+                    uptimeDelta in 0L..60_000L -> DispatchEpoch.UPTIME
+                    wallDelta in 0L..60_000L -> DispatchEpoch.WALL
+                    else -> DispatchEpoch.UNAVAILABLE
+                }
+                Log.i(TAG, "dispatch epoch locked: $dispatchEpoch")
+                if (dispatchEpoch == DispatchEpoch.UNAVAILABLE) return
+            }
+            val deltaMs = when (dispatchEpoch) {
+                DispatchEpoch.UPTIME -> SystemClock.uptimeMillis() - tsMs
+                DispatchEpoch.WALL -> System.currentTimeMillis() - tsMs
+                else -> return
+            }
             if (deltaMs < 0L) return
             PerfCounters.recordDirect(metric, deltaMs * 1_000_000L)
         }
@@ -159,10 +198,10 @@ class OnyxInkController : InkController {
             // Mirror Bigme's SLOW_STROKE log so per-pause touch-IC wakes
             // (or any sustained dispatch backlog) surface in logcat with
             // wall-clock context — Onyx can't measure post-event paint, so
-            // we use the pen.kernel_to_jvm side as the headline proxy.
-            val k2jMs = if (tp.timestamp > 0L) {
-                (SystemClock.uptimeMillis() - tp.timestamp).coerceAtLeast(0L)
-            } else -1L
+            // we use the pen.kernel_to_jvm side as the headline proxy. Use
+            // the same epoch-locked value PerfCounters just recorded.
+            val k2jSnap = PerfCounters.get(PerfMetric.PEN_KERNEL_TO_JVM)
+            val k2jMs = if (k2jSnap.count > 0L) k2jSnap.lastMs else -1L
             if (sIdx <= 10) {
                 Log.i(TAG, "FIRST_STROKE #$sIdx: kernel_to_jvm=${k2jMs}ms")
             }
@@ -210,6 +249,8 @@ class OnyxInkController : InkController {
         override fun onRawErasingTouchPointMoveReceived(tp: TouchPoint) {}
         override fun onRawErasingTouchPointListReceived(tpl: TouchPointList) {}
     }
+
+    private enum class DispatchEpoch { UNKNOWN, UPTIME, WALL, UNAVAILABLE }
 
     companion object {
         private const val TAG = "OnyxInkController"

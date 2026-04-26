@@ -86,7 +86,18 @@ class InkSurfaceView @JvmOverloads constructor(
         }
         override fun onStrokeEnd(x: Float, y: Float, pressure: Float, timestampMs: Long) {
             strokeBuffer.add(PointF(x, y))
-            if (!mirrorEnabled) { strokeBuffer.clear(); return }
+            if (!mirrorEnabled || ink.ownsSurface) {
+                // ownsSurface (Onyx): TouchHelper holds the SurfaceView's
+                // surface lock for the duration of raw drawing. Calling
+                // commitToSurface() → holder.lockCanvas() here blocks the
+                // vendor input thread indefinitely, which back-pressures
+                // SurfaceFlinger and freezes the main-thread timer. Bitmap
+                // mirroring is also pointless on Onyx — the panel content
+                // we'd be re-blitting is exactly what TouchHelper already
+                // shows.
+                strokeBuffer.clear()
+                return
+            }
             val bmp = contentBitmap
             if (bmp != null) {
                 if (!ink.mirrorOverlay(bmp)) replayStrokeToBitmap(bmp)
@@ -116,6 +127,13 @@ class InkSurfaceView @JvmOverloads constructor(
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
         if (!mirrorEnabled) return
+        // Onyx TouchHelper owns the surface while raw drawing is active —
+        // host commits would block. Bitmap stays in sync for future use.
+        if (ink.ownsSurface) {
+            val bmp = contentBitmap
+            if (bmp == null || bmp.width != w || bmp.height != h) rebuildBitmap()
+            return
+        }
         val bmp = contentBitmap
         if (bmp != null && bmp.width == w && bmp.height == h) {
             commitToSurface()
@@ -163,7 +181,11 @@ class InkSurfaceView @JvmOverloads constructor(
         val bmp = contentBitmap
         if (bmp != null) {
             Canvas(bmp).drawColor(Color.WHITE)
-            commitToSurface()
+            // Skip the host-side surface commit when the controller owns the
+            // surface (Onyx) — would block on TouchHelper's surface lock.
+            // syncOverlay(force=true) cycles raw drawing and lets the EPD
+            // pick up the freshly-cleared content.
+            if (!ink.ownsSurface) commitToSurface()
             ink.syncOverlay(bmp, force = true)
         } else {
             // No mirror, no host bitmap. Force a full-screen GU16 refresh
