@@ -28,7 +28,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnDump: Button
     private lateinit var btnMirror: Button
     private lateinit var btnTimer: Button
-    private var timerEnabled: Boolean = true
+    /** Per-second status text update mode. 0=off, 1=1Hz (default countdown
+     *  timer), 2=30Hz (frame-rate-paced status hammer). The 30Hz mode
+     *  exists to test whether the timer-induced binder stall is per-update
+     *  cost (would 30× as bad) or per-second-window cost (about the same). */
+    private var timerMode: Int = 1
+    private var timerHzHandler: android.os.Handler? = null
+    private var timerHzRunnable: Runnable? = null
+    /** Mode label captured at benchmark start, used to tag the perf dump. */
+    private var currentBenchmarkLabel: String = ""
     private lateinit var perfPanel: ScrollView
     private lateinit var perfHeadline: TextView
     private lateinit var perfFooter: TextView
@@ -44,7 +52,7 @@ class MainActivity : AppCompatActivity() {
         // Persisted Mirror flag, applied BEFORE surfaceCreated fires.
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         ink.mirrorEnabled = prefs.getBoolean(PREF_MIRROR, true)
-        timerEnabled = prefs.getBoolean(PREF_TIMER, true)
+        timerMode = prefs.getInt(PREF_TIMER_MODE, 1)
         status = findViewById(R.id.txtStatus)
         btnBenchmark = findViewById(R.id.btnBenchmark)
         btnClear = findViewById(R.id.btnClear)
@@ -58,12 +66,12 @@ class MainActivity : AppCompatActivity() {
             recreate()
         }
         btnTimer = findViewById(R.id.btnTimer)
-        btnTimer.text = if (timerEnabled) "Timer: ON" else "Timer: OFF"
+        btnTimer.text = timerLabel()
         btnTimer.setOnClickListener {
-            timerEnabled = !timerEnabled
-            prefs.edit().putBoolean(PREF_TIMER, timerEnabled).apply()
-            btnTimer.text = if (timerEnabled) "Timer: ON" else "Timer: OFF"
-            Log.i(TAG, "Timer toggled to $timerEnabled (no restart needed)")
+            timerMode = (timerMode + 1) % 3
+            prefs.edit().putInt(PREF_TIMER_MODE, timerMode).apply()
+            btnTimer.text = timerLabel()
+            Log.i(TAG, "Timer mode → $timerMode (${timerLabel()})")
         }
 
         btnBenchmark.setOnClickListener {
@@ -108,12 +116,14 @@ class MainActivity : AppCompatActivity() {
         ink.clear()
         perfPanel.visibility = View.GONE
         benchmarking = true
+        currentBenchmarkLabel = timerLabel()
+        Log.i(TAG, "─── BENCHMARK START [$currentBenchmarkLabel] ───")
         btnBenchmark.text = "Stop"
         btnClear.isEnabled = false
         btnDump.isEnabled = false
         benchmarkTimer = object : CountDownTimer(30_000L, 1_000L) {
             override fun onTick(msUntilFinished: Long) {
-                if (!timerEnabled) return
+                if (timerMode != 1) return  // 1Hz path; 30Hz uses a separate handler
                 val s = ((msUntilFinished + 999) / 1_000).toInt()
                 status.text = "Recording — write now! ${s}s left"
             }
@@ -121,19 +131,51 @@ class MainActivity : AppCompatActivity() {
                 stopBenchmark(showResults = true)
             }
         }.start()
-        status.text = if (timerEnabled) "Recording — write now! 30s left"
-                      else "Recording — write now! (no countdown)"
+        // 30Hz mode: hammer the status TextView at frame rate by ticking a
+        // monotonic counter. Tests whether the timer stall scales with
+        // cadence (suggesting per-update cost) or saturates (one-shot
+        // contention per second-window).
+        if (timerMode == 2) {
+            val handler = android.os.Handler(mainLooper)
+            timerHzHandler = handler
+            var counter = 0
+            val r = object : Runnable {
+                override fun run() {
+                    if (!benchmarking) return
+                    status.text = "Recording — counter=${counter++} (30Hz)"
+                    handler.postDelayed(this, 33L)
+                }
+            }
+            timerHzRunnable = r
+            handler.post(r)
+        }
+        status.text = when (timerMode) {
+            0 -> "Recording — write now! (Timer OFF)"
+            1 -> "Recording — write now! 30s left"
+            2 -> "Recording — counter=0 (30Hz)"
+            else -> "Recording…"
+        }
     }
 
     private fun stopBenchmark(showResults: Boolean) {
         benchmarkTimer?.cancel()
         benchmarkTimer = null
+        timerHzRunnable?.let { timerHzHandler?.removeCallbacks(it) }
+        timerHzRunnable = null
+        timerHzHandler = null
         benchmarking = false
         btnBenchmark.text = "Bench 30s"
         btnClear.isEnabled = true
         btnDump.isEnabled = true
         status.text = if (ink.isOverlayActive()) "overlay active" else "fallback (Canvas)"
         if (showResults) showPerfPanel()
+    }
+
+    private fun timerLabel(): String = when (timerMode) {
+        0 -> "Timer: OFF"
+        1 -> "Timer: 1Hz"
+        2 -> "Timer: 30Hz"
+        else -> "Timer: ?"
     }
 
     private fun showPerfPanel() {
@@ -179,14 +221,15 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "Perf panel shown — ${snap.values.sumOf { it.count }} total samples")
         // Mirror to logcat as a flat block so it can be pulled via adb
         // without a screen capture.
-        Log.i(TAG, "─── PERF DUMP ───")
+        val label = if (currentBenchmarkLabel.isNotEmpty()) " [$currentBenchmarkLabel]" else ""
+        Log.i(TAG, "─── PERF DUMP$label ───")
         Log.i(TAG, perfHeadline.text.toString())
         for ((m, s) in snap) {
             if (s.count == 0L) continue
             Log.i(TAG, String.format("%-32s n=%-7d p50=%-4dms p95=%-4dms max=%-4dms",
                 m.label, s.count, s.p50Ms, s.p95Ms, s.maxMs))
         }
-        Log.i(TAG, "─── END PERF DUMP ───")
+        Log.i(TAG, "─── END PERF DUMP$label ───")
     }
 
     private fun sectionHeader(text: String, topGap: Boolean): TableRow {
@@ -262,6 +305,6 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "MainActivity"
         private const val PREFS = "inksdk-demo"
         private const val PREF_MIRROR = "mirror_enabled"
-        private const val PREF_TIMER = "timer_enabled"
+        private const val PREF_TIMER_MODE = "timer_mode"
     }
 }

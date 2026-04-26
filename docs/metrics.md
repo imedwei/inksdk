@@ -171,34 +171,56 @@ the signal to add a pre-warm path back.
 
 ## UI-compose binder stall
 
-Per-second TextView updates (or any other on-screen redraw) during active
-writing can chronically inflate `event.kernel_to_jvm` from `p95 ≤ 2 ms`
-into the **70–100 ms** range. We caught this by A/B-ing the demo's
-benchmark countdown text:
+On-screen redraws during active writing — even a single TextView text
+change per second — chronically inflate `event.kernel_to_jvm` for
+*every* binder input event, not just DOWN. The cost scales linearly
+with redraw cadence; it is **per-update**, not per-time-window.
 
-| | `event.kernel_to_jvm` p95 | `event.kernel_to_jvm` max |
+We measured this with the demo's benchmark countdown TextView at three
+cadences. Same writing pace, same controller, same hardware:
+
+| | `event.kernel_to_jvm` p50 / p95 / max | `pen.kernel_to_paint` p50 / p95 / max |
 |---|---|---|
-| Per-second status text update | 76 ms | 94 ms |
-| No status text update | 1 ms | 2 ms |
+| **No update** | 0 / 1 / 2 ms | 5 / 100 / 104 ms |
+| **1 Hz** (per-second countdown) | 0 / 11 / 26 ms | 5 / 122 / 144 ms |
+| **30 Hz** (frame-rate counter) | **430 / 1062 / 1078 ms** | **325 / 770 / 898 ms** |
 
-`event.kernel_to_jvm` is recorded for *every* binder input event, not
-just DOWN, so this captures the daemon's pen events being delayed
-end-to-end. The likely chain: TextView text change → View invalidate →
-SurfaceFlinger compose pass → EPD waveform queue activity → daemon's
-binder thread loses scheduling slot.
+At 30 Hz the binder dispatch path is saturated: every input event lands
+behind ~430 ms of queued contention, and writing becomes effectively
+unusable. (`pen.jvm_to_paint` stays at p95 ≤ 4 ms in all three runs —
+once the event reaches the JVM, processing is fine. The latency is
+all dispatch.)
 
-**Implications for hosts:**
+**Mechanism, narrowed by the cadence sweep:**
 
-- During active writing, *avoid* updating non-canvas UI on a high cadence.
-  A countdown timer, a constantly-updating word count, a spinner, an
-  animated loading indicator — anything that triggers a SurfaceFlinger
-  compose can throw 70–100 ms into the dispatch path.
-- This is *separate* from the touch-IC wake. The wake hits per-stroke after
-  a pause; the UI compose stall hits *every event* (including MOVEs) during
-  the redraw window. They compound.
-- If you must show progress during writing, drive it via the daemon's own
-  paint path (e.g. paint into the daemon's Canvas via `BigmeInkController`'s
-  diagnostic methods) rather than through the standard Android view tree.
+- Each text change → View invalidate → Choreographer `doFrame` →
+  SurfaceFlinger compose request via binder → EPD waveform queue write
+  → HAL command-queue commit. Most of those steps serialize on resources
+  the xrz daemon's input dispatch also uses.
+- 1 update per second → small queue depth, ~10–26 ms p95 delay.
+- 30 updates per second → constant queue depth, every event adds delay
+  until the system can drain. The fact that the cost scales linearly
+  with cadence rules out GC pauses (would be cadence-independent) and
+  main-thread blocking (binder threads are independent of the host's
+  main thread). It's **contention for the EPD/HAL command queue between
+  SurfaceFlinger composes and the daemon's input-event dispatch** —
+  both are producers into one queue.
+
+**Implications for hosts** (these are MUSTs, not nice-to-haves):
+
+- During active writing, avoid all non-canvas UI updates: countdown
+  timers, periodic word counts, blinking cursors, network-progress
+  spinners, animated loading indicators.
+- If you must show progress during writing, batch the updates and flush
+  them when the user pauses — between strokes, on pen-lift, on idle.
+  Stroke end (`onStrokeEnd`) is a natural flush point.
+- This stall is *additive* to the per-pause touch-IC wake. The wake hits
+  per-stroke-after-pause; the compose stall hits *every event* (DOWN and
+  MOVE) during the redraw cadence window. Together they can take a
+  perfectly fast hardware path and produce a sluggish writing experience.
+- The library cannot fix this from inside `BigmeInkController` — the
+  contention is below us, between the host's view tree and the daemon's
+  binder thread. Host-side discipline is the only lever.
 
 ## What we deliberately do *not* measure
 
