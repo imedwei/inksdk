@@ -35,6 +35,10 @@ The library, [`inksdk`](..), exposes one Kotlin interface — `InkController` �
 
 Both devices give you fast ink. The mechanisms diverge enough that "the same library code" doesn't get you there — the host has to know which compositor model it's working under.
 
+![Bigme vs Onyx ink architectures, side by side](eink-pen-architectures.svg)
+
+[Source: `eink-pen-architectures.svg`](eink-pen-architectures.svg). Six layers (hardware → kernel → native → framework → app → display HAL) drawn for both vendors at the same vertical positions, so the boundaries between vendor and host become visible at a glance: Bigme's daemon owns input + ION buffer + EPD trigger and hands the host a real Canvas to paint into; Onyx's in-process SDK owns the SurfaceView and paints natively, leaving the host as a passive observer of the `RawInputCallback`.
+
 ---
 
 ## The shared problem

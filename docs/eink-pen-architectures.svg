@@ -1,0 +1,243 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 880" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">
+  <title>Bigme vs Onyx ink architectures, side by side</title>
+
+  <!-- Header -->
+  <text x="620" y="28" text-anchor="middle" font-size="18" font-weight="700" font-family="system-ui, Helvetica, sans-serif">Bigme vs Onyx ink architectures, side by side</text>
+  <text x="620" y="48" text-anchor="middle" font-size="12" fill="#666" font-family="system-ui, Helvetica, sans-serif">Same six layers, same input + paint lanes — but the boundaries between vendor and host fall in completely different places.</text>
+
+  <!-- Column headers -->
+  <g font-family="system-ui, Helvetica, sans-serif">
+    <rect x="160" y="65" width="500" height="36" rx="6" fill="#fffaf3" stroke="#e67e22" stroke-width="1.5"/>
+    <text x="410" y="89" text-anchor="middle" font-size="16" font-weight="700" fill="#e67e22">BIGME</text>
+    <text x="410" y="103" text-anchor="middle" font-size="11" fill="#666">HiBreak Plus / Android 14 / xrz daemon v1.4.0</text>
+
+    <rect x="700" y="65" width="500" height="36" rx="6" fill="#f1f5fb" stroke="#1e6dc6" stroke-width="1.5"/>
+    <text x="950" y="89" text-anchor="middle" font-size="16" font-weight="700" fill="#1e6dc6">ONYX</text>
+    <text x="950" y="103" text-anchor="middle" font-size="11" fill="#666">Palma2 Pro / Android 15 / onyxsdk-pen 1.5.2</text>
+  </g>
+
+  <!-- Layer band labels -->
+  <g font-family="system-ui, Helvetica, sans-serif" font-size="11" fill="#888" font-weight="700">
+    <text x="20" y="160">HARDWARE</text>
+    <text x="20" y="240">KERNEL</text>
+    <text x="20" y="350">NATIVE</text>
+    <text x="20" y="500">FRAMEWORK</text>
+    <text x="20" y="610">APP PROCESS</text>
+    <text x="20" y="760">DISPLAY HAL</text>
+  </g>
+
+  <!-- Subtle layer separators -->
+  <g stroke="#eee" stroke-width="1">
+    <line x1="160" y1="195" x2="1200" y2="195"/>
+    <line x1="160" y1="265" x2="1200" y2="265"/>
+    <line x1="160" y1="465" x2="1200" y2="465"/>
+    <line x1="160" y1="585" x2="1200" y2="585"/>
+    <line x1="160" y1="725" x2="1200" y2="725"/>
+  </g>
+  <!-- Center divider -->
+  <line x1="680" y1="120" x2="680" y2="820" stroke="#ddd" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+  <!-- ─────────────────────────── BIGME COLUMN ─────────────────────────── -->
+
+  <!-- Hardware -->
+  <g>
+    <rect x="180" y="125" width="220" height="60" rx="6" fill="#fff" stroke="#333"/>
+    <text x="290" y="148" text-anchor="middle" font-weight="700">Focal Tech fts_ts_pen</text>
+    <text x="290" y="164" text-anchor="middle" fill="#666" font-size="11">touch IC — sleeps after ~1–2 s</text>
+    <text x="290" y="178" text-anchor="middle" fill="#c0392b" font-size="11">⚠ 80–170 ms wake spike</text>
+
+    <rect x="430" y="125" width="220" height="60" rx="6" fill="#fff" stroke="#333"/>
+    <text x="540" y="148" text-anchor="middle" font-weight="700">E-ink panel</text>
+    <text x="540" y="164" text-anchor="middle" fill="#666" font-size="11">~30 ms HANDWRITE waveform</text>
+  </g>
+
+  <!-- Kernel -->
+  <g>
+    <rect x="280" y="210" width="240" height="46" rx="6" fill="#f4f9ff" stroke="#1e6dc6"/>
+    <text x="400" y="231" text-anchor="middle" font-weight="700" fill="#1e6dc6">/dev/input/event2</text>
+    <text x="400" y="247" text-anchor="middle" fill="#1e6dc6" font-size="11">read by daemon (NOT InputDispatcher)</text>
+  </g>
+
+  <!-- Native daemon (large block) -->
+  <g>
+    <rect x="180" y="285" width="470" height="170" rx="8" fill="#fffaf3" stroke="#e67e22" stroke-width="1.5"/>
+    <text x="195" y="305" font-weight="700" fill="#e67e22">/system/bin/handwrittenservice</text>
+    <text x="195" y="320" fill="#666" font-size="11">native daemon, ROOT, registered binder service</text>
+
+    <rect x="195" y="335" width="135" height="50" rx="4" fill="#fff" stroke="#1e6dc6"/>
+    <text x="262" y="354" text-anchor="middle" font-weight="700" fill="#1e6dc6" font-size="12">input reader</text>
+    <text x="262" y="370" text-anchor="middle" fill="#1e6dc6" font-size="10">CLOCK_REALTIME</text>
+
+    <rect x="345" y="335" width="135" height="50" rx="4" fill="#fff" stroke="#666"/>
+    <text x="412" y="354" text-anchor="middle" font-weight="700" font-size="12">ION buffer</text>
+    <text x="412" y="370" text-anchor="middle" fill="#666" font-size="10">shared mem owner</text>
+
+    <rect x="495" y="335" width="135" height="50" rx="4" fill="#fff" stroke="#e67e22"/>
+    <text x="562" y="354" text-anchor="middle" font-weight="700" fill="#e67e22" font-size="12">EPD trigger</text>
+    <text x="562" y="370" text-anchor="middle" fill="#e67e22" font-size="10">inValidate → HAL</text>
+
+    <text x="195" y="408" fill="#666" font-size="11">→ binder dispatch on a SEPARATE binder thread</text>
+    <text x="195" y="424" fill="#666" font-size="11">→ Canvas-via-mmap; host paints, daemon sees pixels for free</text>
+    <text x="195" y="440" fill="#666" font-size="11">→ inValidate(rect, MODE_HANDWRITE/GU16/GC16)</text>
+  </g>
+
+  <!-- Framework -->
+  <g>
+    <rect x="180" y="475" width="470" height="100" rx="8" fill="#f1f5fb" stroke="#1e6dc6" stroke-width="1.5"/>
+    <text x="195" y="495" font-weight="700" fill="#1e6dc6">com.xrz.HandwrittenClient</text>
+    <text x="195" y="509" fill="#666" font-size="11">in framework.jar (BOOTCLASSPATH); reflective use</text>
+    <text x="195" y="528" font-size="11">bindView • connect • registerInputListener</text>
+    <text x="195" y="544" font-size="11">getCanvas() : ION-backed</text>
+    <text x="195" y="560" font-size="11">inValidate(rect, mode)</text>
+  </g>
+
+  <!-- App -->
+  <g>
+    <rect x="180" y="595" width="470" height="120" rx="8" fill="#fff" stroke="#333" stroke-width="1.5"/>
+    <text x="195" y="614" font-weight="700">App process</text>
+    <text x="195" y="628" fill="#666" font-size="11">host paints into ION Canvas + invalidates</text>
+
+    <rect x="195" y="640" width="200" height="60" rx="4" fill="#f4f9ff" stroke="#1e6dc6"/>
+    <text x="295" y="660" text-anchor="middle" font-weight="700" fill="#1e6dc6" font-size="12">InputListener</text>
+    <text x="295" y="676" text-anchor="middle" fill="#1e6dc6" font-size="10">on BINDER thread (off-main)</text>
+    <text x="295" y="691" text-anchor="middle" fill="#666" font-size="10">action,x,y,pressure,tool,time</text>
+
+    <rect x="410" y="640" width="225" height="60" rx="4" fill="#fff8ef" stroke="#e67e22"/>
+    <text x="522" y="660" text-anchor="middle" font-weight="700" fill="#e67e22" font-size="12">Canvas.drawLine + inValidate</text>
+    <text x="522" y="676" text-anchor="middle" fill="#666" font-size="10">throttled to ~16 ms (vsync)</text>
+    <text x="522" y="691" text-anchor="middle" fill="#666" font-size="10">MODE_HANDWRITE = 1029</text>
+  </g>
+
+  <!-- HAL -->
+  <g>
+    <rect x="180" y="735" width="470" height="60" rx="6" fill="#fff8ef" stroke="#e67e22"/>
+    <text x="415" y="757" text-anchor="middle" font-weight="700" fill="#e67e22">EPD HAL → waveform engine</text>
+    <text x="415" y="773" text-anchor="middle" fill="#c0392b" font-size="11">⚠ shares command queue with SurfaceFlinger composes</text>
+  </g>
+
+  <!-- Bigme arrows -->
+  <line x1="290" y1="185" x2="290" y2="210" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="400" y1="256" x2="400" y2="285" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <!-- daemon → framework input -->
+  <line x1="262" y1="385" x2="262" y2="475" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <!-- daemon → framework Canvas (ION mmap) -->
+  <line x1="412" y1="385" x2="412" y2="475" stroke="#666" stroke-width="2" marker-end="url(#arrowgrey)"/>
+  <!-- framework → daemon EPD trigger -->
+  <line x1="562" y1="475" x2="562" y2="385" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+  <!-- framework → app -->
+  <line x1="295" y1="575" x2="295" y2="640" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="522" y1="640" x2="522" y2="575" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+  <!-- daemon → HAL (long arrow on right edge) -->
+  <line x1="600" y1="385" x2="600" y2="735" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+  <!-- HAL → panel (right edge curved up) -->
+  <path d="M 645 745 Q 670 745 670 155 L 650 130" stroke="#e67e22" stroke-width="2" fill="none" marker-end="url(#arrowor)"/>
+
+  <!-- ─────────────────────────── ONYX COLUMN ─────────────────────────── -->
+
+  <!-- Hardware -->
+  <g>
+    <rect x="720" y="125" width="220" height="60" rx="6" fill="#fff" stroke="#333"/>
+    <text x="830" y="148" text-anchor="middle" font-weight="700">Elan onyx_emp_elan_pen</text>
+    <text x="830" y="164" text-anchor="middle" fill="#666" font-size="11">touch IC — no observed sleep</text>
+    <text x="830" y="178" text-anchor="middle" fill="#27ae60" font-size="11">✓ ≤12 ms steady state</text>
+
+    <rect x="970" y="125" width="220" height="60" rx="6" fill="#fff" stroke="#333"/>
+    <text x="1080" y="148" text-anchor="middle" font-weight="700">E-ink panel</text>
+    <text x="1080" y="164" text-anchor="middle" fill="#666" font-size="11">DU partial / GC full waveforms</text>
+  </g>
+
+  <!-- Kernel -->
+  <g>
+    <rect x="820" y="210" width="240" height="46" rx="6" fill="#f4f9ff" stroke="#1e6dc6"/>
+    <text x="940" y="231" text-anchor="middle" font-weight="700" fill="#1e6dc6">/dev/input/event6</text>
+    <text x="940" y="247" text-anchor="middle" fill="#1e6dc6" font-size="11">read by SDK in-process (no daemon)</text>
+  </g>
+
+  <!-- Native (in-process .so, smaller block — no daemon) -->
+  <g>
+    <rect x="720" y="285" width="470" height="170" rx="8" fill="#fffaf3" stroke="#e67e22" stroke-width="1.5"/>
+    <text x="735" y="305" font-weight="700" fill="#e67e22">lib_touch_reader.so + libonyx_pen_touch_reader.so</text>
+    <text x="735" y="320" fill="#666" font-size="11">in-process JNI native libs (NOT a daemon)</text>
+
+    <rect x="735" y="335" width="200" height="50" rx="4" fill="#fff" stroke="#1e6dc6"/>
+    <text x="835" y="354" text-anchor="middle" font-weight="700" fill="#1e6dc6" font-size="12">input reader</text>
+    <text x="835" y="370" text-anchor="middle" fill="#1e6dc6" font-size="10">tp.timestamp = wall ms</text>
+
+    <rect x="950" y="335" width="225" height="50" rx="4" fill="#fff" stroke="#e67e22"/>
+    <text x="1062" y="354" text-anchor="middle" font-weight="700" fill="#e67e22" font-size="12">SDK paints natively</text>
+    <text x="1062" y="370" text-anchor="middle" fill="#e67e22" font-size="10">into SurfaceView surface</text>
+
+    <text x="735" y="408" fill="#666" font-size="11">→ no binder hop; in-process callback</text>
+    <text x="735" y="424" fill="#666" font-size="11">→ NO host Canvas; SDK draws strokes itself</text>
+    <text x="735" y="440" fill="#666" font-size="11">→ TouchHelper OWNS the SurfaceView surface</text>
+  </g>
+
+  <!-- Framework -->
+  <g>
+    <rect x="720" y="475" width="470" height="100" rx="8" fill="#f1f5fb" stroke="#1e6dc6" stroke-width="1.5"/>
+    <text x="735" y="495" font-weight="700" fill="#1e6dc6">com.onyx.android.sdk.pen.TouchHelper</text>
+    <text x="735" y="509" fill="#666" font-size="11">published Maven: onyxsdk-pen 1.5.2</text>
+    <text x="735" y="528" font-size="11">create(view, RawInputCallback)</text>
+    <text x="735" y="544" font-size="11">setLimitRect • openRawDrawing • setRawDrawingEnabled</text>
+    <text x="735" y="560" font-size="11">EpdController.setScreenHandWritingRegionLimit</text>
+  </g>
+
+  <!-- App -->
+  <g>
+    <rect x="720" y="595" width="470" height="120" rx="8" fill="#fff" stroke="#333" stroke-width="1.5"/>
+    <text x="735" y="614" font-weight="700">App process</text>
+    <text x="735" y="628" fill="#666" font-size="11">host is a passive observer; SDK does the painting</text>
+
+    <rect x="735" y="640" width="220" height="60" rx="4" fill="#f4f9ff" stroke="#1e6dc6"/>
+    <text x="845" y="660" text-anchor="middle" font-weight="700" fill="#1e6dc6" font-size="12">RawInputCallback</text>
+    <text x="845" y="676" text-anchor="middle" fill="#c0392b" font-size="10">on MAIN thread (verified tid)</text>
+    <text x="845" y="691" text-anchor="middle" fill="#666" font-size="10">onBeginRawDrawing / Move / End</text>
+
+    <rect x="970" y="640" width="205" height="60" rx="4" fill="#f5f5f5" stroke="#bbb" stroke-dasharray="3 2"/>
+    <text x="1072" y="660" text-anchor="middle" font-weight="700" fill="#888" font-size="12">(no host paint call)</text>
+    <text x="1072" y="676" text-anchor="middle" fill="#888" font-size="10">no Canvas, no inValidate</text>
+    <text x="1072" y="691" text-anchor="middle" fill="#888" font-size="10">→ paint.* metrics N/A</text>
+  </g>
+
+  <!-- HAL -->
+  <g>
+    <rect x="720" y="735" width="470" height="60" rx="6" fill="#fff8ef" stroke="#e67e22"/>
+    <text x="955" y="757" text-anchor="middle" font-weight="700" fill="#e67e22">EPD HAL → waveform engine</text>
+    <text x="955" y="773" text-anchor="middle" fill="#c0392b" font-size="11">⚠ TouchHelper monopolises queue while raw drawing enabled</text>
+  </g>
+
+  <!-- Onyx arrows -->
+  <line x1="830" y1="185" x2="830" y2="210" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="940" y1="256" x2="940" y2="285" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <!-- native → framework input -->
+  <line x1="835" y1="385" x2="835" y2="475" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <!-- native → framework paint (SDK paints, no host involvement) -->
+  <line x1="1062" y1="385" x2="1062" y2="475" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+  <!-- framework → app callback -->
+  <line x1="845" y1="575" x2="845" y2="640" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <!-- native → HAL direct -->
+  <line x1="1140" y1="385" x2="1140" y2="735" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+  <!-- HAL → panel (right edge curved up) -->
+  <path d="M 1185 745 Q 1210 745 1210 155 L 1190 130" stroke="#e67e22" stroke-width="2" fill="none" marker-end="url(#arrowor)"/>
+
+  <!-- ─────────────────────────── KEY DIFFERENCES BAND ─────────────────────────── -->
+  <g font-family="system-ui, Helvetica, sans-serif" font-size="11">
+    <rect x="40" y="820" width="1160" height="48" rx="6" fill="#f6f7f8" stroke="#ddd"/>
+    <text x="60" y="840" font-weight="700" fill="#333">Key differences:</text>
+    <text x="60" y="857" fill="#666">• Bigme = root daemon + ION buffer above SurfaceFlinger; binder-thread input; host paints &amp; invalidates → 9/9 metrics recordable</text>
+    <text x="640" y="857" fill="#666">• Onyx = in-process .so; main-thread input; SDK paints natively → 4/9 metrics recordable</text>
+  </g>
+
+  <!-- Arrow defs -->
+  <defs>
+    <marker id="arrowblue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e6dc6"/>
+    </marker>
+    <marker id="arrowor" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e67e22"/>
+    </marker>
+    <marker id="arrowgrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666"/>
+    </marker>
+  </defs>
+</svg>
