@@ -169,15 +169,17 @@ If a future firmware starts dispatching `NEAR` to InputListener, the
 controller would record a sample in `event.kernel_to_jvm` for it — that's
 the signal to add a pre-warm path back.
 
-## UI-compose binder stall
+## UI-compose stall during writing
 
-On-screen redraws during active writing — even a single TextView text
-change per second — chronically inflate `event.kernel_to_jvm` for
-*every* binder input event, not just DOWN. The cost scales linearly
-with redraw cadence; it is **per-update**, not per-time-window.
+On-screen redraws during active writing inflate `event.kernel_to_jvm`
+on **both** controllers — but the mechanism and the cost differ
+sharply. Both behaviours are real, both are per-update (not
+per-time-window), and both push hosts toward the same discipline:
+batch UI updates, flush them when the pen lifts.
 
-We measured this with the demo's benchmark countdown TextView at three
-cadences. Same writing pace, same controller, same hardware:
+### Bigme HiBreak Plus (Android 14, daemon v1.4.0)
+
+Demo benchmark, same writing pace, same controller:
 
 | | `event.kernel_to_jvm` p50 / p95 / max | `pen.kernel_to_paint` p50 / p95 / max |
 |---|---|---|
@@ -185,42 +187,77 @@ cadences. Same writing pace, same controller, same hardware:
 | **1 Hz** (per-second countdown) | 0 / 11 / 26 ms | 5 / 122 / 144 ms |
 | **30 Hz** (frame-rate counter) | **430 / 1062 / 1078 ms** | **325 / 770 / 898 ms** |
 
-At 30 Hz the binder dispatch path is saturated: every input event lands
-behind ~430 ms of queued contention, and writing becomes effectively
-unusable. (`pen.jvm_to_paint` stays at p95 ≤ 4 ms in all three runs —
-once the event reaches the JVM, processing is fine. The latency is
-all dispatch.)
+At 30 Hz the dispatch path is saturated: every input event lands behind
+~430 ms of queued contention, and writing becomes effectively unusable.
+(`pen.jvm_to_paint` stays at p95 ≤ 4 ms in all three runs — once the
+event reaches the JVM, processing is fine. The latency is all
+dispatch.)
 
-**Mechanism, narrowed by the cadence sweep:**
+**Mechanism: EPD/HAL command queue contention.** Each text change →
+View invalidate → Choreographer `doFrame` → SurfaceFlinger compose
+request via binder → EPD waveform queue write → HAL command-queue
+commit. Those steps serialize on the same kernel resources the xrz
+daemon's input dispatch uses — both are producers into one queue. Cost
+scales linearly with cadence (rules out GC pauses; would be cadence-
+independent) and binder threads run independently of the host main
+thread (rules out main-thread blocking).
 
-- Each text change → View invalidate → Choreographer `doFrame` →
-  SurfaceFlinger compose request via binder → EPD waveform queue write
-  → HAL command-queue commit. Most of those steps serialize on resources
-  the xrz daemon's input dispatch also uses.
-- 1 update per second → small queue depth, ~10–26 ms p95 delay.
-- 30 updates per second → constant queue depth, every event adds delay
-  until the system can drain. The fact that the cost scales linearly
-  with cadence rules out GC pauses (would be cadence-independent) and
-  main-thread blocking (binder threads are independent of the host's
-  main thread). It's **contention for the EPD/HAL command queue between
-  SurfaceFlinger composes and the daemon's input-event dispatch** —
-  both are producers into one queue.
+### Onyx Palma2 Pro (Android 15, onyxsdk-pen 1.5.2)
+
+Same demo, same writing pace, on Palma2 Pro:
+
+| | `pen.kernel_to_jvm` p50 / p95 / max | `event.kernel_to_jvm` p50 / p95 / max |
+|---|---|---|
+| **1 Hz** | 2 / 10 / 12 ms | 0 / 2 / 17 ms |
+| **30 Hz** | 15 / 28 / 43 ms | 6 / 26 / 36 ms |
+
+`pen.kernel_to_paint`, `pen.jvm_to_paint`, `pen.move_to_paint`, and the
+`paint.*` family are all unrecordable on Onyx (TouchHelper paints in
+native code), so `pen.kernel_to_jvm` stands in as the proxy headline.
+
+**Mechanism: main-thread CPU contention.** On this firmware Onyx's
+`RawInputCallback` fires on the **main thread**, not a separate binder
+thread (verified: same tid as the activity's main thread). Choreographer
+ticks at 30 Hz steal main-thread time slices the input callback would
+otherwise run in, so dispatch latency rises 13× at p95. The view-tree
+work itself (View.invalidate → doFrame) is the cost — even though
+TouchHelper monopolises the EPD waveform engine and **no view-tree
+update visibly lands on the panel during writing**, the CPU work to
+prepare those (invisible) updates still happens.
+
+### Cross-device comparison
+
+| | Bigme 30 Hz | Onyx 30 Hz | Onyx penalty vs Bigme |
+|---|---|---|---|
+| `event.kernel_to_jvm` p95 | **1062 ms** | 26 ms | **40× milder** |
+| `event.kernel_to_jvm` max | 1078 ms | 36 ms | 30× milder |
+| Headline first-paint p95 | 770 ms (`kernel_to_paint`) | 28 ms (`kernel_to_jvm` proxy) | – |
+
+Onyx degrades but stays in the "perceptible but usable" band; Bigme at
+30 Hz collapses to "unusable." Different bottlenecks lead to different
+slopes — but the rule is the same: don't update non-canvas UI while
+the user is writing.
 
 **Implications for hosts** (these are MUSTs, not nice-to-haves):
 
 - During active writing, avoid all non-canvas UI updates: countdown
   timers, periodic word counts, blinking cursors, network-progress
-  spinners, animated loading indicators.
+  spinners, animated loading indicators. The rule applies on both
+  controllers; only the failure mode differs.
 - If you must show progress during writing, batch the updates and flush
   them when the user pauses — between strokes, on pen-lift, on idle.
   Stroke end (`onStrokeEnd`) is a natural flush point.
-- This stall is *additive* to the per-pause touch-IC wake. The wake hits
-  per-stroke-after-pause; the compose stall hits *every event* (DOWN and
-  MOVE) during the redraw cadence window. Together they can take a
+- On Bigme this stall is *additive* to the per-pause touch-IC wake.
+  The wake hits per-stroke-after-pause; the compose stall hits *every*
+  event during the redraw cadence window. Together they can take a
   perfectly fast hardware path and produce a sluggish writing experience.
-- The library cannot fix this from inside `BigmeInkController` — the
-  contention is below us, between the host's view tree and the daemon's
-  binder thread. Host-side discipline is the only lever.
+  We have not observed an equivalent touch-IC wake pathology on Onyx
+  Palma2 Pro — `pen.kernel_to_jvm` stayed under 12 ms across 9 strokes
+  with natural pauses between them.
+- The library cannot fix this from inside the controller — the
+  contention is below us (Bigme: between host view tree and daemon
+  binder thread; Onyx: between view-tree work and the input callback
+  on the same main thread). Host-side discipline is the only lever.
 
 ## What we deliberately do *not* measure
 
