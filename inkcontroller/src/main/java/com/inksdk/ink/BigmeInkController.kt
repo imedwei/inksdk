@@ -64,6 +64,14 @@ class BigmeInkController : InkController {
 
     private var pendingWidth: Float = InkDefaults.DEFAULT_STROKE_WIDTH_PX
 
+    // Per-session diagnostic counter — kept here (not on InputProxy) so the
+    // host can reset it on demand (e.g. Clear button) without detaching.
+    private val strokeIndex = java.util.concurrent.atomic.AtomicInteger(0)
+
+    override fun resetDiagnostics() {
+        strokeIndex.set(0)
+    }
+
     override fun attach(view: SurfaceView, limit: Rect, callback: StrokeCallback): Boolean {
         if (isActive) return true
         if (attaching) return false
@@ -79,7 +87,14 @@ class BigmeInkController : InkController {
             val listener = Proxy.newProxyInstance(
                 cls.classLoader,
                 arrayOf(listenerCls),
-                InputProxy(callback, view, getClient = { client }, getClientClass = { clientClass }, getStrokeWidth = { pendingWidth }),
+                InputProxy(
+                    callback,
+                    view,
+                    getClient = { client },
+                    getClientClass = { clientClass },
+                    getStrokeWidth = { pendingWidth },
+                    strokeIndex = strokeIndex,
+                ),
             )
             cls.getMethod("registerInputListener", listenerCls).invoke(c, listener)
 
@@ -148,6 +163,59 @@ class BigmeInkController : InkController {
         }
     }
 
+    override fun mirrorOverlay(target: android.graphics.Bitmap): Boolean {
+        val c = client ?: return false
+        val cls = clientClass ?: return false
+        val view = attachedView ?: return false
+        return try {
+            // Preferred: HandwrittenClient.getContent() returns the ION-
+            // backed bitmap. On some xrz firmwares this stays null even
+            // after first commit — fall back to reflecting the Canvas's
+            // hidden mBitmap field, which holds the same underlying buffer.
+            // Requires HiddenApiBypass.addHiddenApiExemptions("L") at host
+            // Application.onCreate() on Android 14+.
+            var src = cls.getMethod("getContent").invoke(c) as? android.graphics.Bitmap
+            if (src == null) {
+                val daemonCanvas = cls.getMethod("getCanvas").invoke(c)
+                    as? android.graphics.Canvas
+                if (daemonCanvas != null) {
+                    src = canvasBitmapField()?.get(daemonCanvas) as? android.graphics.Bitmap
+                }
+            }
+            if (src == null) {
+                Log.w(TAG, "mirrorOverlay: no source bitmap (getContent and Canvas.mBitmap both unavailable)")
+                return false
+            }
+            // The daemon's content buffer can be either view-sized or panel-
+            // sized depending on firmware. If it matches our target, blit
+            // straight; otherwise treat src as panel-coords and crop the
+            // view-region out using the view's screen position.
+            val canvas = android.graphics.Canvas(target)
+            if (src.width == target.width && src.height == target.height) {
+                canvas.drawBitmap(src, 0f, 0f, null)
+                Log.i(TAG, "mirrorOverlay: 1:1 copy ${src.width}x${src.height}")
+            } else {
+                val loc = IntArray(2)
+                view.getLocationOnScreen(loc)
+                val sx = loc[0].coerceIn(0, maxOf(0, src.width - target.width))
+                val sy = loc[1].coerceIn(0, maxOf(0, src.height - target.height))
+                val srcRect = android.graphics.Rect(
+                    sx, sy,
+                    (sx + target.width).coerceAtMost(src.width),
+                    (sy + target.height).coerceAtMost(src.height),
+                )
+                val dstRect = android.graphics.Rect(0, 0, srcRect.width(), srcRect.height())
+                canvas.drawBitmap(src, srcRect, dstRect, null)
+                Log.i(TAG, "mirrorOverlay: panel-crop src=${src.width}x${src.height} " +
+                    "target=${target.width}x${target.height} viewLoc=(${loc[0]},${loc[1]}) srcRect=$srcRect")
+            }
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "mirrorOverlay failed: ${t.message}", t)
+            false
+        }
+    }
+
     override fun syncOverlay(bitmap: android.graphics.Bitmap, region: Rect?, force: Boolean) {
         val c = client ?: return
         val cls = clientClass ?: return
@@ -173,6 +241,111 @@ class BigmeInkController : InkController {
             Log.i(TAG, "syncOverlay: GU16 refresh $rect")
         } catch (t: Throwable) {
             Log.w(TAG, "syncOverlay failed: ${t.message}")
+        }
+    }
+
+    override fun clearRegion(region: android.graphics.Rect) {
+        if (region.isEmpty) return
+        val c = client ?: return
+        val cls = clientClass ?: return
+        try {
+            val canvas = cls.getMethod("getCanvas").invoke(c) as? android.graphics.Canvas ?: return
+            canvas.save()
+            canvas.clipRect(region)
+            canvas.drawColor(android.graphics.Color.WHITE)
+            canvas.restore()
+            // Intentionally NO inValidate — leaves the daemon's already-
+            // displayed EPD pixels alone (the host's SurfaceView compose has
+            // them under the canonical bitmap by now). Wiping only the ION
+            // buffer prevents ghost-accumulation and the position-shift
+            // symptom where two pipelines composit the same ink at slightly
+            // different panel pixels.
+        } catch (t: Throwable) {
+            Log.w(TAG, "clearRegion failed: ${t.message}")
+        }
+    }
+
+    /** Diagnostic: passive inspection of the daemon's Canvas/content buffer
+     *  and view layouts. Does NOT call any drawing or invalidation — just
+     *  reflectively inspects properties so it cannot upset the daemon
+     *  state. Returns a multi-line string for on-screen display AND mirrors
+     *  to logcat. */
+    fun diagnostics(): String {
+        val c = client ?: return "not attached"
+        val cls = clientClass ?: return "no clientClass"
+        val view = attachedView ?: return "no attachedView"
+        val sb = StringBuilder()
+        try {
+            val canvas = runCatching { cls.getMethod("getCanvas").invoke(c) as? android.graphics.Canvas }.getOrNull()
+            sb.appendLine("=== Daemon Canvas ===")
+            sb.appendLine("instance: $canvas")
+            if (canvas != null) {
+                sb.appendLine("class:    ${canvas.javaClass.name}")
+                sb.appendLine("dims:     ${canvas.width} x ${canvas.height}")
+                // Probe only the well-known field name; don't iterate all
+                // declared fields (some are native pointers and touching
+                // them aggressively appears to upset the daemon).
+                val mBitmap = runCatching {
+                    android.graphics.Canvas::class.java.getDeclaredField("mBitmap")
+                        .apply { isAccessible = true }
+                        .get(canvas)
+                }.getOrNull()
+                sb.appendLine("Canvas.mBitmap: ${shortValue(mBitmap)}")
+            }
+            sb.appendLine()
+            sb.appendLine("=== getContent() ===")
+            val content = runCatching { cls.getMethod("getContent").invoke(c) }.getOrNull()
+            sb.appendLine(if (content == null) "null" else "${content::class.java.name}: ${shortValue(content)}")
+            sb.appendLine()
+            sb.appendLine("=== Daemon view layouts ===")
+            sb.appendLine("getViewLayout():     ${runCatching { cls.getMethod("getViewLayout").invoke(c) }.getOrNull()}")
+            sb.appendLine("getPhyViewLayout():  ${runCatching { cls.getMethod("getPhyViewLayout").invoke(c) }.getOrNull()}")
+            sb.appendLine("getPhyRotation():    ${runCatching { cls.getMethod("getPhyRotation").invoke(c) }.getOrNull()}")
+            sb.appendLine("getCurViewRotation():${runCatching { cls.getMethod("getCurViewRotation").invoke(c) }.getOrNull()}")
+            sb.appendLine()
+            sb.appendLine("=== Attached View ===")
+            val loc = IntArray(2)
+            view.getLocationOnScreen(loc)
+            sb.appendLine("class:            ${view.javaClass.name}")
+            sb.appendLine("locationOnScreen: (${loc[0]}, ${loc[1]})")
+            sb.appendLine("size:             ${view.width} x ${view.height}")
+            sb.appendLine("Build:            ${android.os.Build.MANUFACTURER}/${android.os.Build.BRAND}/${android.os.Build.MODEL}/SDK${android.os.Build.VERSION.SDK_INT}")
+        } catch (t: Throwable) {
+            sb.appendLine("diagnostics threw: ${t.javaClass.simpleName}: ${t.message}")
+        }
+        Log.i(TAG, "diagnostics:\n$sb")
+        return sb.toString()
+    }
+
+    private fun shortValue(v: Any?): String {
+        if (v == null) return "null"
+        if (v is android.graphics.Bitmap) return "Bitmap(${v.width}x${v.height}, ${v.config})"
+        val s = v.toString()
+        return if (s.length > 80) s.take(77) + "..." else s
+    }
+
+    /** Diagnostic: paint a single 30x30 filled rect at daemon-canvas coord
+     *  ([x], [y]) and request a HANDWRITE-mode refresh on a tight rect.
+     *  Single-shot only — earlier multi-fixture batches with GU16 caused a
+     *  hard reboot on the HiBreak Plus, so this is intentionally minimal. */
+    fun paintFixture(x: Int, y: Int) {
+        val c = client ?: return
+        val cls = clientClass ?: return
+        try {
+            val canvas = cls.getMethod("getCanvas").invoke(c) as? android.graphics.Canvas ?: return
+            val paint = android.graphics.Paint().apply {
+                color = android.graphics.Color.BLACK
+                style = android.graphics.Paint.Style.FILL
+                isAntiAlias = false
+            }
+            val r = android.graphics.Rect(x - 15, y - 15, x + 15, y + 15)
+            canvas.drawRect(r, paint)
+            val refresh = android.graphics.Rect(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2)
+            cls.getMethod("inValidate", android.graphics.Rect::class.java, Int::class.javaPrimitiveType)
+                .invoke(c, refresh, MODE_HANDWRITE)
+            Log.i(TAG, "paintFixture: canvas($x, $y) → rect=$r refreshed=$refresh mode=HANDWRITE")
+        } catch (t: Throwable) {
+            Log.w(TAG, "paintFixture failed: ${t.message}", t)
         }
     }
 
@@ -213,6 +386,7 @@ class BigmeInkController : InkController {
         private val getClient: () -> Any?,
         private val getClientClass: () -> Class<*>?,
         private val getStrokeWidth: () -> Float,
+        private val strokeIndex: java.util.concurrent.atomic.AtomicInteger,
     ) : InvocationHandler {
         private val mainHandler = android.os.Handler(view.context.mainLooper)
         private val paint = android.graphics.Paint().apply {
@@ -235,13 +409,14 @@ class BigmeInkController : InkController {
         // Force-commit the first MOVE of each stroke so the user sees ink
         // immediately rather than waiting for the COMMIT_INTERVAL_MS gate.
         private var firstMoveOfStroke = false
-        private var downStartNs = 0L
-        private var firstMoveArrivalNs = 0L
-        // Throttle EPD pre-warm on ACTION_NEAR to ≤ 1 inValidate every 500ms
-        // so we don't spam the daemon during hover.
-        private var lastPreWarmNs = 0L
-        private val preWarmRect = android.graphics.Rect(0, 0, 1, 1)
-        private val PRE_WARM_INTERVAL_NS = 500_000_000L
+        private var downStartNs = 0L          // System.nanoTime() at JVM-DOWN entry
+        private var firstMoveArrivalNs = 0L   // System.nanoTime() at first MOVE
+        // Daemon CLOCK_REALTIME at the kernel pen-down read. Captured at
+        // ACTION_DOWN, consumed by the first inValidate to compute the
+        // wall-clock pen.kernel_to_paint headline metric.
+        private var downKernelWallNs = 0L
+        // strokeIndex / nearEventCount are now shared with the parent
+        // BigmeInkController so resetDiagnostics() can clear them on demand.
         private val COMMIT_INTERVAL_MS = 16L  // one per vsync
 
         override fun invoke(proxy: Any?, method: Method, args: Array<out Any?>?): Any? {
@@ -251,9 +426,10 @@ class BigmeInkController : InkController {
                 // (wall-clock since Unix epoch) set by the daemon when it
                 // reads the /dev/input event. Subtract from wall-now to get
                 // the kernel → daemon → binder → JVM dispatch delay.
+                var daemonNs = 0L
                 if (args.size >= 6) {
                     val tsArg = args[5]
-                    val daemonNs = when (tsArg) {
+                    daemonNs = when (tsArg) {
                         is Long -> tsArg
                         is Int -> tsArg.toLong()
                         else -> 0L
@@ -261,7 +437,7 @@ class BigmeInkController : InkController {
                     if (daemonNs != 0L) {
                         val nowWallNs = System.currentTimeMillis() * 1_000_000L
                         PerfCounters.recordDirect(
-                            PerfMetric.INK_DAEMON_DISPATCH_LATENCY,
+                            PerfMetric.EVENT_KERNEL_TO_JVM,
                             nowWallNs - daemonNs,
                         )
                     }
@@ -288,16 +464,15 @@ class BigmeInkController : InkController {
                         }
                         if (canvas != null) {
                             when (action) {
-                                ACTION_NEAR -> {
-                                    val now = System.nanoTime()
-                                    if (now - lastPreWarmNs >= PRE_WARM_INTERVAL_NS) {
-                                        lastPreWarmNs = now
-                                        try {
-                                            cls.getMethod("inValidate", android.graphics.Rect::class.java, Int::class.javaPrimitiveType)
-                                                .invoke(client, preWarmRect, MODE_HANDWRITE)
-                                        } catch (_: Throwable) { /* tolerate */ }
-                                    }
-                                }
+                                // ACTION_NEAR is intentionally not handled. On
+                                // Bigme HiBreak Plus the xrz daemon never
+                                // dispatches NEAR events to the InputListener
+                                // under cooked or raw input, so the historical
+                                // pre-warm heuristic (small inValidate) was dead
+                                // code. The first-stroke "wake" cost (~100 ms)
+                                // lives in the touch IC sleep state and only
+                                // physical capacitive proximity wakes it. See
+                                // docs/metrics.md → "Touch IC wake".
                                 ACTION_DOWN -> {
                                     lastX = x; lastY = y
                                     accumDirty.set(Int.MAX_VALUE, Int.MAX_VALUE, Int.MIN_VALUE, Int.MIN_VALUE)
@@ -305,6 +480,17 @@ class BigmeInkController : InkController {
                                     lastCommitMs = ts
                                     firstMoveOfStroke = true
                                     downStartNs = System.nanoTime()
+                                    downKernelWallNs = daemonNs
+                                    strokeIndex.incrementAndGet()
+                                    if (daemonNs != 0L) {
+                                        // pen.kernel_to_jvm: wall delta from daemon's
+                                        // kernel-read ts to this DOWN landing here.
+                                        val nowWallNs = System.currentTimeMillis() * 1_000_000L
+                                        PerfCounters.recordDirect(
+                                            PerfMetric.PEN_KERNEL_TO_JVM,
+                                            nowWallNs - daemonNs,
+                                        )
+                                    }
                                     paint.strokeWidth = getStrokeWidth()
                                 }
                                 ACTION_MOVE -> {
@@ -312,7 +498,7 @@ class BigmeInkController : InkController {
                                     val drawStart = System.nanoTime()
                                     canvas.drawLine(lastX, lastY, x, y, paint)
                                     PerfCounters.recordDirect(
-                                        PerfMetric.INK_DAEMON_DRAW_LINE,
+                                        PerfMetric.PAINT_DRAW_SEGMENT,
                                         System.nanoTime() - drawStart,
                                     )
                                     val pad = paint.strokeWidth.toInt() + 2
@@ -330,22 +516,53 @@ class BigmeInkController : InkController {
                                             .invoke(client, accumDirty, MODE_HANDWRITE)
                                         val invEnd = System.nanoTime()
                                         PerfCounters.recordDirect(
-                                            PerfMetric.INK_DAEMON_INVALIDATE,
+                                            PerfMetric.PAINT_INVALIDATE_CALL,
                                             invEnd - invStart,
                                         )
                                         if (wasFirst) {
                                             PerfCounters.recordDirect(
-                                                PerfMetric.INK_DAEMON_DOWN_TO_PAINT,
+                                                PerfMetric.PEN_JVM_TO_PAINT,
                                                 invEnd - downStartNs,
                                             )
                                             PerfCounters.recordDirect(
-                                                PerfMetric.INK_DAEMON_DOWN_TO_FIRST_MOVE,
+                                                PerfMetric.PEN_JVM_TO_FIRST_MOVE,
                                                 firstMoveArrivalNs - downStartNs,
                                             )
                                             PerfCounters.recordDirect(
-                                                PerfMetric.INK_DAEMON_FIRST_MOVE_TO_PAINT,
+                                                PerfMetric.PEN_MOVE_TO_PAINT,
                                                 invEnd - firstMoveArrivalNs,
                                             )
+                                            // Headline: pen.kernel_to_paint =
+                                            // wall-clock from daemon's DOWN read to
+                                            // first inValidate returning. Cross-clock
+                                            // measurement: both endpoints are
+                                            // wall-time (System.currentTimeMillis
+                                            // and daemon CLOCK_REALTIME).
+                                            val k2pMs = if (downKernelWallNs != 0L) {
+                                                val nowWallNs = System.currentTimeMillis() * 1_000_000L
+                                                val deltaNs = nowWallNs - downKernelWallNs
+                                                PerfCounters.recordDirect(
+                                                    PerfMetric.PEN_KERNEL_TO_PAINT,
+                                                    deltaNs,
+                                                )
+                                                deltaNs / 1_000_000
+                                            } else -1
+                                            // First-N-strokes diagnostics: log the
+                                            // headline directly so a slow first
+                                            // stroke isn't averaged out of the
+                                            // ring-buffer percentiles.
+                                            val sIdx = strokeIndex.get()
+                                            if (sIdx <= 10) {
+                                                val k2j = if (downKernelWallNs != 0L)
+                                                    (System.currentTimeMillis() * 1_000_000L - downKernelWallNs) / 1_000_000
+                                                else -1
+                                                android.util.Log.i(TAG,
+                                                    "FIRST_STROKE #$sIdx: " +
+                                                        "kernel_to_paint=${k2pMs}ms " +
+                                                        "jvm_to_paint=${(invEnd - downStartNs) / 1_000_000}ms " +
+                                                        "jvm_to_first_move=${(firstMoveArrivalNs - downStartNs) / 1_000_000}ms " +
+                                                        "move_to_paint=${(invEnd - firstMoveArrivalNs) / 1_000_000}ms")
+                                            }
                                         }
                                         accumDirty.set(Int.MAX_VALUE, Int.MAX_VALUE, Int.MIN_VALUE, Int.MIN_VALUE)
                                         lastCommitMs = ts
@@ -359,13 +576,14 @@ class BigmeInkController : InkController {
                                         cls.getMethod("inValidate", android.graphics.Rect::class.java, Int::class.javaPrimitiveType)
                                             .invoke(client, accumDirty, MODE_HANDWRITE)
                                         PerfCounters.recordDirect(
-                                            PerfMetric.INK_DAEMON_INVALIDATE,
+                                            PerfMetric.PAINT_INVALIDATE_CALL,
                                             System.nanoTime() - invStart,
                                         )
                                         accumDirty.set(Int.MAX_VALUE, Int.MAX_VALUE, Int.MIN_VALUE, Int.MIN_VALUE)
                                     }
                                     strokeBbox.set(Int.MAX_VALUE, Int.MAX_VALUE, Int.MIN_VALUE, Int.MIN_VALUE)
                                     lastX = x; lastY = y
+                                    downKernelWallNs = 0L
                                 }
                             }
                         }
@@ -382,7 +600,7 @@ class BigmeInkController : InkController {
                     }
                 }
                 PerfCounters.recordDirect(
-                    PerfMetric.INK_DAEMON_INVOKE_TOTAL,
+                    PerfMetric.EVENT_HANDLER,
                     System.nanoTime() - invokeStart,
                 )
                 return 0
@@ -400,6 +618,28 @@ class BigmeInkController : InkController {
         private const val TAG = "BigmeInkController"
         private const val HANDWRITTEN_CLIENT = "com.xrz.HandwrittenClient"
         private const val INPUT_LISTENER = "com.xrz.HandwrittenClient\$InputListener"
+
+        // Lazily-resolved Canvas.mBitmap accessor. Hidden API on AOSP, but
+        // marked @UnsupportedAppUsage so it remains reachable when the host
+        // calls HiddenApiBypass.addHiddenApiExemptions("L") on Android 14+.
+        @Volatile private var canvasBitmapFieldCached: java.lang.reflect.Field? = null
+        @Volatile private var canvasBitmapFieldChecked = false
+        private fun canvasBitmapField(): java.lang.reflect.Field? {
+            if (canvasBitmapFieldChecked) return canvasBitmapFieldCached
+            synchronized(this) {
+                if (!canvasBitmapFieldChecked) {
+                    canvasBitmapFieldCached = try {
+                        android.graphics.Canvas::class.java.getDeclaredField("mBitmap")
+                            .apply { isAccessible = true }
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Canvas.mBitmap reflection unavailable: ${t.message}")
+                        null
+                    }
+                    canvasBitmapFieldChecked = true
+                }
+            }
+            return canvasBitmapFieldCached
+        }
 
         const val ACTION_NEAR = 0
         const val ACTION_DOWN = 1

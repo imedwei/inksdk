@@ -45,20 +45,48 @@ applicable subset executes.
 ## Perf counters
 
 Every metric is recorded on the daemon binder thread (Bigme) with no
-allocations on the hot path. Read them via `PerfCounters.snapshot()`:
+allocations on the hot path. Three tiers by sample rate:
 
-| Metric | Meaning |
-|---|---|
-| `ink.daemon.draw_line` | `Canvas.drawLine` into the ION buffer per MOVE |
-| `ink.daemon.invalidate` | `inValidate(rect, mode)` round-trip |
-| `ink.daemon.invoke_total` | Whole `InputProxy.invoke` hot path (one event) |
-| `ink.daemon.down_to_paint` | ACTION_DOWN → first inValidate (first paint) |
-| `ink.daemon.down_to_first_move` | ACTION_DOWN → first MOVE (kernel + daemon + binder + user pen speed) |
-| `ink.daemon.first_move_to_paint` | First MOVE → first inValidate (pure JVM-side) |
-| `ink.daemon.dispatch_latency` | Daemon CLOCK_REALTIME → InputProxy.invoke (cross-clock dispatch delay) |
+- **`pen.*`** — once per stroke. Headline is `pen.kernel_to_paint`
+  (wall-clock from kernel pen-down to first inValidate returning).
+- **`event.*`** — once per binder input event. Dispatch + handler timing.
+- **`paint.*`** — once per draw segment. drawLine + inValidate calls.
 
-The "Dump perf" button in the demo logs and on-screen-prints the counter
-table for the current session.
+See [`docs/metrics.md`](docs/metrics.md) for full definitions and the
+diagram below showing which boundaries each metric spans.
+
+![Pen-down to ink-on-screen latency journey](docs/metrics-timeline.svg)
+
+```kotlin
+val s = PerfCounters.get(PerfMetric.PEN_KERNEL_TO_PAINT)
+Log.i(TAG, "first paint p50=${s.p50Ms}ms p95=${s.p95Ms}ms")
+```
+
+The "Dump perf" button in the demo logs and on-screen-prints the full
+counter table.
+
+### Custom metric prefix
+
+Counter labels are prefixed with `"ink."` by default. Hosts integrating
+multiple perf systems can override at startup:
+
+```kotlin
+PerfCounters.prefix = "myapp.ink."
+// PerfMetric.PEN_KERNEL_TO_PAINT.label is now "myapp.ink.pen.kernel_to_paint"
+```
+
+Set to `""` to drop the prefix entirely.
+
+### Per-controller coverage
+
+`paint.*` and the paint-side `pen.*` metrics rely on a JVM-side "first
+paint issued" moment. Bigme exposes one (we call `inValidate` ourselves);
+Onyx hides paint inside `TouchHelper`'s native code, so those metrics will
+report `count=0` on Onyx. The `pen.kernel_to_jvm`,
+`pen.jvm_to_first_move`, `event.kernel_to_jvm`, and `event.handler`
+metrics compose on both controllers (Onyx wiring is planned). See
+[`docs/metrics.md`](docs/metrics.md#per-controller-coverage) for the
+matrix.
 
 ## Adding to another project
 

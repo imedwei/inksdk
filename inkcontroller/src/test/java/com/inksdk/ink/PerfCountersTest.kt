@@ -8,11 +8,14 @@ import org.junit.Test
 class PerfCountersTest {
 
     @After
-    fun tearDown() { PerfCounters.reset() }
+    fun tearDown() {
+        PerfCounters.reset()
+        PerfCounters.prefix = "ink."
+    }
 
     @Test
     fun emptyCounterReportsZeros() {
-        val s = PerfCounters.get(PerfMetric.INK_DAEMON_INVOKE_TOTAL)
+        val s = PerfCounters.get(PerfMetric.EVENT_HANDLER)
         assertEquals(0L, s.count)
         assertEquals(0L, s.p50Ms)
         assertEquals(0L, s.p95Ms)
@@ -22,49 +25,79 @@ class PerfCountersTest {
 
     @Test
     fun recordDirectAccumulatesAndComputesPercentiles() {
-        // 100 evenly-spaced samples: 1ms..100ms (in nanos).
         for (i in 1..100) {
-            PerfCounters.recordDirect(PerfMetric.INK_DAEMON_DRAW_LINE, i.toLong() * 1_000_000)
+            PerfCounters.recordDirect(PerfMetric.PAINT_DRAW_SEGMENT, i.toLong() * 1_000_000)
         }
-        val s = PerfCounters.get(PerfMetric.INK_DAEMON_DRAW_LINE)
+        val s = PerfCounters.get(PerfMetric.PAINT_DRAW_SEGMENT)
         assertEquals(100L, s.count)
         assertEquals(100L, s.maxMs)
-        // p50 is at index 50 in a sorted array of 1..100 → value 51
         assertEquals(51L, s.p50Ms)
-        // p95: index 95 → value 96
         assertEquals(96L, s.p95Ms)
     }
 
     @Test
     fun ringBufferKeepsLatestWindow() {
-        // 250 samples into a 200-window: only the last 200 should remain.
         for (i in 1..250) {
-            PerfCounters.recordDirect(PerfMetric.INK_DAEMON_INVALIDATE, i.toLong() * 1_000_000)
+            PerfCounters.recordDirect(PerfMetric.PAINT_INVALIDATE_CALL, i.toLong() * 1_000_000)
         }
-        val s = PerfCounters.get(PerfMetric.INK_DAEMON_INVALIDATE)
-        assertEquals(250L, s.count) // total observed
-        assertEquals(200, s.samples.size) // window size
-        // Values 51..250 retained; max=250, p50≈value at sorted index 100 = 151.
+        val s = PerfCounters.get(PerfMetric.PAINT_INVALIDATE_CALL)
+        assertEquals(250L, s.count)
+        assertEquals(200, s.samples.size)
         assertEquals(250L, s.maxMs)
         assertEquals(151L, s.p50Ms)
     }
 
     @Test
     fun timeBlockRecordsElapsed() {
-        val result = PerfCounters.time(PerfMetric.INK_DAEMON_DOWN_TO_PAINT) {
-            // Spin briefly so elapsed is > 0.
+        val result = PerfCounters.time(PerfMetric.PEN_KERNEL_TO_PAINT) {
             var x = 0; for (i in 0 until 1_000) x = (x + i) % 7; x
         }
-        // result is the spin output; we just need to confirm a sample landed.
         assertTrue("PerfCounters.time recorded: $result", result >= 0)
-        assertEquals(1L, PerfCounters.get(PerfMetric.INK_DAEMON_DOWN_TO_PAINT).count)
+        assertEquals(1L, PerfCounters.get(PerfMetric.PEN_KERNEL_TO_PAINT).count)
     }
 
     @Test
     fun resetClearsAllCounters() {
-        PerfCounters.recordDirect(PerfMetric.INK_DAEMON_DISPATCH_LATENCY, 5_000_000)
-        assertEquals(1L, PerfCounters.get(PerfMetric.INK_DAEMON_DISPATCH_LATENCY).count)
+        PerfCounters.recordDirect(PerfMetric.EVENT_KERNEL_TO_JVM, 5_000_000)
+        assertEquals(1L, PerfCounters.get(PerfMetric.EVENT_KERNEL_TO_JVM).count)
         PerfCounters.reset()
-        assertEquals(0L, PerfCounters.get(PerfMetric.INK_DAEMON_DISPATCH_LATENCY).count)
+        assertEquals(0L, PerfCounters.get(PerfMetric.EVENT_KERNEL_TO_JVM).count)
+    }
+
+    @Test
+    fun defaultPrefixIsInk() {
+        assertEquals("ink.", PerfCounters.prefix)
+        assertEquals("ink.pen.kernel_to_paint", PerfMetric.PEN_KERNEL_TO_PAINT.label)
+        assertEquals("ink.event.handler", PerfMetric.EVENT_HANDLER.label)
+        assertEquals("ink.paint.draw_segment", PerfMetric.PAINT_DRAW_SEGMENT.label)
+    }
+
+    @Test
+    fun customPrefixAppliesToAllLabels() {
+        PerfCounters.prefix = "myapp.ink."
+        assertEquals("myapp.ink.pen.kernel_to_paint", PerfMetric.PEN_KERNEL_TO_PAINT.label)
+        assertEquals("myapp.ink.event.kernel_to_jvm", PerfMetric.EVENT_KERNEL_TO_JVM.label)
+        // Empty prefix is honoured (no namespace at all).
+        PerfCounters.prefix = ""
+        assertEquals("pen.kernel_to_paint", PerfMetric.PEN_KERNEL_TO_PAINT.label)
+    }
+
+    @Test
+    fun allExpectedMetricsExist() {
+        // Smoke-check that the rename didn't drop any metric. If this list
+        // changes, update both the enum and docs/metrics.md.
+        val baseNames = PerfMetric.entries.map { it.label.removePrefix(PerfCounters.prefix) }.toSet()
+        val expected = setOf(
+            "pen.kernel_to_paint",
+            "pen.kernel_to_jvm",
+            "pen.jvm_to_paint",
+            "pen.jvm_to_first_move",
+            "pen.move_to_paint",
+            "event.kernel_to_jvm",
+            "event.handler",
+            "paint.draw_segment",
+            "paint.invalidate_call",
+        )
+        assertEquals(expected, baseNames)
     }
 }

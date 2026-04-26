@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 600" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">
+  <title>Pen-down to ink-on-screen latency journey, with metric coverage</title>
+
+  <!-- Title -->
+  <text x="490" y="28" text-anchor="middle" font-size="18" font-weight="700" font-family="system-ui, Helvetica, sans-serif">Pen-down → ink-on-screen, with metric coverage</text>
+  <text x="490" y="50" text-anchor="middle" font-size="12" fill="#666" font-family="system-ui, Helvetica, sans-serif">Time flows left → right. Greyed regions are not measurable from the JVM.</text>
+
+  <!-- Stage labels (above the timeline) -->
+  <g font-size="11" text-anchor="middle">
+    <text x="60"  y="100" fill="#888">A. Pen tip</text><text x="60"  y="115" fill="#888">touches glass</text>
+    <text x="190" y="100">B. Kernel writes</text><text x="190" y="115">/dev/input event</text>
+    <text x="320" y="100">C. JVM receives</text><text x="320" y="115">DOWN event</text>
+    <text x="500" y="100">D. JVM receives</text><text x="500" y="115">first MOVE</text>
+    <text x="640" y="100">E. drawLine</text><text x="640" y="115">into ION</text>
+    <text x="770" y="100">F. inValidate</text><text x="770" y="115">returns</text>
+    <text x="900" y="100" fill="#888">G. EPD ink</text><text x="900" y="115" fill="#888">visible</text>
+  </g>
+
+  <!-- Tick marks on the timeline -->
+  <g stroke="#333" stroke-width="1.5">
+    <line x1="60"  y1="135" x2="60"  y2="155"/>
+    <line x1="190" y1="135" x2="190" y2="155"/>
+    <line x1="320" y1="135" x2="320" y2="155"/>
+    <line x1="500" y1="135" x2="500" y2="155"/>
+    <line x1="640" y1="135" x2="640" y2="155"/>
+    <line x1="770" y1="135" x2="770" y2="155"/>
+    <line x1="900" y1="135" x2="900" y2="155"/>
+  </g>
+
+  <!-- Timeline axis -->
+  <line x1="20" y1="145" x2="960" y2="145" stroke="#333" stroke-width="2"/>
+
+  <!-- Greyed regions for unmeasurable spans (before B, after F) -->
+  <rect x="20"  y="138" width="170" height="14" fill="#000" fill-opacity="0.06"/>
+  <rect x="770" y="138" width="190" height="14" fill="#000" fill-opacity="0.06"/>
+
+  <!-- HEADLINE METRIC: pen.kernel_to_paint  (B → F) -->
+  <g>
+    <line x1="190" y1="190" x2="770" y2="190" stroke="#c0392b" stroke-width="3"/>
+    <line x1="190" y1="183" x2="190" y2="197" stroke="#c0392b" stroke-width="3"/>
+    <line x1="770" y1="183" x2="770" y2="197" stroke="#c0392b" stroke-width="3"/>
+    <text x="480" y="180" text-anchor="middle" font-weight="700" fill="#c0392b" font-size="14">pen.kernel_to_paint</text>
+    <text x="480" y="208" text-anchor="middle" fill="#666" font-size="11">wall-clock end-to-end first-paint (kernel pen-down → first inValidate returns)</text>
+  </g>
+
+  <!-- pen.kernel_to_jvm (B → C) -->
+  <g stroke="#1e6dc6">
+    <line x1="190" y1="245" x2="320" y2="245" stroke-width="3"/>
+    <line x1="190" y1="240" x2="190" y2="250" stroke-width="3"/>
+    <line x1="320" y1="240" x2="320" y2="250" stroke-width="3"/>
+  </g>
+  <text x="255" y="263" text-anchor="middle" fill="#1e6dc6" font-size="11">pen.kernel_to_jvm</text>
+
+  <!-- pen.jvm_to_paint (C → F) -->
+  <g stroke="#1e6dc6">
+    <line x1="320" y1="245" x2="770" y2="245" stroke-width="3"/>
+    <line x1="320" y1="240" x2="320" y2="250" stroke-width="3"/>
+    <line x1="770" y1="240" x2="770" y2="250" stroke-width="3"/>
+  </g>
+  <text x="545" y="263" text-anchor="middle" fill="#1e6dc6" font-size="11">pen.jvm_to_paint</text>
+
+  <!-- pen.jvm_to_first_move (C → D), nested inside jvm_to_paint -->
+  <g stroke="#3498db">
+    <line x1="320" y1="295" x2="500" y2="295" stroke-width="3"/>
+    <line x1="320" y1="290" x2="320" y2="300" stroke-width="3"/>
+    <line x1="500" y1="290" x2="500" y2="300" stroke-width="3"/>
+  </g>
+  <text x="410" y="313" text-anchor="middle" fill="#3498db" font-size="11">pen.jvm_to_first_move</text>
+
+  <!-- pen.move_to_paint (D → F) -->
+  <g stroke="#3498db">
+    <line x1="500" y1="295" x2="770" y2="295" stroke-width="3"/>
+    <line x1="500" y1="290" x2="500" y2="300" stroke-width="3"/>
+    <line x1="770" y1="290" x2="770" y2="300" stroke-width="3"/>
+  </g>
+  <text x="635" y="313" text-anchor="middle" fill="#3498db" font-size="11">pen.move_to_paint</text>
+
+  <!-- event.kernel_to_jvm (per-event; B→C is the same span as pen.kernel_to_jvm but fires per event) -->
+  <g stroke="#27ae60" stroke-dasharray="6 3">
+    <line x1="190" y1="350" x2="320" y2="350" stroke-width="2"/>
+    <line x1="190" y1="345" x2="190" y2="355" stroke-width="2"/>
+    <line x1="320" y1="345" x2="320" y2="355" stroke-width="2"/>
+  </g>
+  <text x="255" y="368" text-anchor="middle" fill="#27ae60" font-size="11">event.kernel_to_jvm</text>
+  <text x="255" y="382" text-anchor="middle" fill="#27ae60" font-size="10" font-style="italic">(once per event)</text>
+
+  <!-- event.handler (per-event; covers the JVM-side InputProxy.invoke for one event) -->
+  <g stroke="#27ae60" stroke-dasharray="6 3">
+    <line x1="320" y1="395" x2="345" y2="395" stroke-width="2"/>
+    <line x1="320" y1="390" x2="320" y2="400" stroke-width="2"/>
+    <line x1="345" y1="390" x2="345" y2="400" stroke-width="2"/>
+  </g>
+  <text x="350" y="398" fill="#27ae60" font-size="11">event.handler &#160; (full InputProxy.invoke, fires per event)</text>
+
+  <!-- paint.draw_segment (around E) -->
+  <g stroke="#e67e22">
+    <line x1="610" y1="430" x2="640" y2="430" stroke-width="3"/>
+    <line x1="610" y1="425" x2="610" y2="435" stroke-width="3"/>
+    <line x1="640" y1="425" x2="640" y2="435" stroke-width="3"/>
+  </g>
+  <text x="625" y="448" text-anchor="middle" fill="#e67e22" font-size="11">paint.draw_segment</text>
+
+  <!-- paint.invalidate_call (just before/at F) -->
+  <g stroke="#e67e22">
+    <line x1="700" y1="430" x2="770" y2="430" stroke-width="3"/>
+    <line x1="700" y1="425" x2="700" y2="435" stroke-width="3"/>
+    <line x1="770" y1="425" x2="770" y2="435" stroke-width="3"/>
+  </g>
+  <text x="735" y="448" text-anchor="middle" fill="#e67e22" font-size="11">paint.invalidate_call</text>
+
+  <!-- Decomposition equation -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">
+    <rect x="40" y="490" width="900" height="80" fill="#f6f7f8" stroke="#ddd"/>
+    <text x="55" y="512" font-weight="700">Decomposition</text>
+    <text x="55" y="532">pen.kernel_to_paint = pen.kernel_to_jvm + pen.jvm_to_paint</text>
+    <text x="55" y="550">pen.jvm_to_paint   = pen.jvm_to_first_move + pen.move_to_paint</text>
+    <text x="55" y="565" fill="#666" font-size="11">// per-event kernel_to_jvm and event.handler are independent samples; paint.* are inside pen.move_to_paint</text>
+  </g>
+
+  <!-- Legend -->
+  <g font-family="system-ui, Helvetica, sans-serif" font-size="11">
+    <text x="800" y="510" font-weight="700">Legend</text>
+    <line x1="800" y1="525" x2="830" y2="525" stroke="#c0392b" stroke-width="3"/>
+    <text x="836" y="529">headline</text>
+    <line x1="800" y1="540" x2="830" y2="540" stroke="#1e6dc6" stroke-width="3"/>
+    <text x="836" y="544">pen.* (per stroke)</text>
+    <line x1="800" y1="555" x2="830" y2="555" stroke="#27ae60" stroke-width="2" stroke-dasharray="6 3"/>
+    <text x="836" y="559">event.* (per event)</text>
+    <line x1="800" y1="570" x2="830" y2="570" stroke="#e67e22" stroke-width="3"/>
+    <text x="836" y="574">paint.* (per draw)</text>
+  </g>
+</svg>

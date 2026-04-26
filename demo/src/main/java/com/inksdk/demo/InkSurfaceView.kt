@@ -5,9 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
-import android.os.SystemClock
 import android.util.AttributeSet
 import android.util.Log
 import android.view.MotionEvent
@@ -21,16 +20,22 @@ import com.inksdk.ink.StrokeCallback
 /**
  * Slim ink surface — minimum machinery to exercise the [InkController]:
  *
- * - Daemon path (consumesMotionEvents = true): the controller paints into the
- *   ION buffer directly. This view only mirrors completed strokes into a
- *   [contentBitmap] so a re-attach (orientation, surface recreation) doesn't
- *   lose them. No per-stroke processing, no caches, no Choreographer dance.
- * - Fallback (no controller / consumesMotionEvents = false): standard
+ * - Daemon path (`consumesMotionEvents = true`): the controller paints into
+ *   the ION overlay directly. We additionally mirror each completed stroke
+ *   into [contentBitmap] so the SurfaceView underlay carries the ink across
+ *   system-driven UI composes (status TextView updates, etc.) that would
+ *   otherwise blit a stale white SurfaceView buffer over the EPD region.
+ *   The mirror first tries [InkController.mirrorOverlay] (pixel-perfect
+ *   copy) and falls back to coordinate replay using daemon-delivered
+ *   view-local coords (see Mokke commit d439fdd: `convertXY` runs inside
+ *   the daemon's dispatcher, so coords arrive view-local).
+ *
+ * - Fallback (no controller / `consumesMotionEvents = false`): standard
  *   MotionEvent + Canvas. Paints incrementally into [contentBitmap] and
  *   posts to the SurfaceHolder.
  *
- * The whole purpose is to be small enough that any latency we measure is
- * attributable to the controller, not the host.
+ * Kept small so any latency we measure is attributable to the controller,
+ * not the host.
  */
 class InkSurfaceView @JvmOverloads constructor(
     context: Context,
@@ -43,6 +48,16 @@ class InkSurfaceView @JvmOverloads constructor(
     private var contentBitmap: Bitmap? = null
     private var surfaceReady = false
 
+    /** When false, ALL bitmap-mirror operations are skipped:
+     *  - no contentBitmap allocation
+     *  - no commitToSurface
+     *  - no syncOverlay at attach
+     *  - no stroke-end mirror
+     *  Used to A/B test whether the mirror itself is causing latency or
+     *  visible artifacts. Must be set BEFORE surfaceCreated fires
+     *  (typically right after the view is inflated, in onCreate). */
+    var mirrorEnabled: Boolean = true
+
     private val strokePaint = Paint().apply {
         color = InkDefaults.DEFAULT_STROKE_COLOR
         strokeWidth = InkDefaults.DEFAULT_STROKE_WIDTH_PX
@@ -51,7 +66,10 @@ class InkSurfaceView @JvmOverloads constructor(
         strokeJoin = Paint.Join.ROUND
         isAntiAlias = false
     }
-    private val livePath = Path()
+    // Daemon-path stroke buffer — main-thread access.
+    private val strokeBuffer = mutableListOf<PointF>()
+
+    // Fallback (MotionEvent) path state.
     private var lastX = 0f
     private var lastY = 0f
     private var penDown = false
@@ -60,26 +78,36 @@ class InkSurfaceView @JvmOverloads constructor(
 
     private val strokeCallback = object : StrokeCallback {
         override fun onStrokeBegin(x: Float, y: Float, pressure: Float, timestampMs: Long) {
-            Log.d(TAG, "begin ${ink.javaClass.simpleName}: ($x,$y)")
+            strokeBuffer.clear()
+            strokeBuffer.add(PointF(x, y))
         }
-        override fun onStrokeMove(x: Float, y: Float, pressure: Float, timestampMs: Long) = Unit
+        override fun onStrokeMove(x: Float, y: Float, pressure: Float, timestampMs: Long) {
+            strokeBuffer.add(PointF(x, y))
+        }
         override fun onStrokeEnd(x: Float, y: Float, pressure: Float, timestampMs: Long) {
-            // Daemon already painted into ION; no host-side bitmap update is
-            // strictly required for visible ink, but mirroring lets the
-            // surface survive recreation (orientation, etc).
-            Log.d(TAG, "end (${ink.javaClass.simpleName})")
+            strokeBuffer.add(PointF(x, y))
+            if (!mirrorEnabled) { strokeBuffer.clear(); return }
+            val bmp = contentBitmap
+            if (bmp != null) {
+                if (!ink.mirrorOverlay(bmp)) replayStrokeToBitmap(bmp)
+                commitToSurface()
+            }
+            strokeBuffer.clear()
         }
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
-        rebuildBitmap()
-        commitToSurface()
+        Log.i(TAG, "surfaceCreated — mirrorEnabled=$mirrorEnabled")
+        if (mirrorEnabled) {
+            rebuildBitmap()
+            commitToSurface()
+        }
         if (width > 0 && height > 0) {
             val limit = Rect(0, 0, width, height)
             if (ink.attach(this, limit, strokeCallback)) {
                 Log.i(TAG, "${ink.javaClass.simpleName} attached")
-                ink.syncOverlay(contentBitmap!!, force = false)
+                if (mirrorEnabled) ink.syncOverlay(contentBitmap!!, force = false)
             } else {
                 Log.i(TAG, "Falling back to MotionEvent path")
             }
@@ -87,6 +115,12 @@ class InkSurfaceView @JvmOverloads constructor(
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+        if (!mirrorEnabled) return
+        val bmp = contentBitmap
+        if (bmp != null && bmp.width == w && bmp.height == h) {
+            commitToSurface()
+            return
+        }
         rebuildBitmap()
         commitToSurface()
     }
@@ -99,14 +133,11 @@ class InkSurfaceView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // If the controller consumes motion events, do not double-process.
         if (ink.consumesMotionEvents) return false
         val bmp = contentBitmap ?: return false
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
                 penDown = true
-                livePath.reset()
-                livePath.moveTo(event.x, event.y)
                 lastX = event.x; lastY = event.y
             }
             MotionEvent.ACTION_MOVE -> {
@@ -122,18 +153,43 @@ class InkSurfaceView @JvmOverloads constructor(
                 lastX = event.x; lastY = event.y
                 commitToSurface()
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                penDown = false
-            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { penDown = false }
         }
         return true
     }
 
     fun clear() {
-        val bmp = contentBitmap ?: return
-        Canvas(bmp).drawColor(Color.WHITE)
-        commitToSurface()
-        ink.syncOverlay(bmp, force = true)
+        strokeBuffer.clear()
+        val bmp = contentBitmap
+        if (bmp != null) {
+            Canvas(bmp).drawColor(Color.WHITE)
+            commitToSurface()
+            ink.syncOverlay(bmp, force = true)
+        } else {
+            // No mirror, no host bitmap. Force a full-screen GU16 refresh
+            // by syncing a transient white scratch bitmap once.
+            val scratch = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            Canvas(scratch).drawColor(Color.WHITE)
+            ink.syncOverlay(scratch, force = true)
+            scratch.recycle()
+        }
+        // Reset session diagnostics so first-N-stroke logs fire again on
+        // the next stroke. Lets the user iterate without restarting the app.
+        ink.resetDiagnostics()
+    }
+
+    /** Paint the buffered stroke into [bmp] at view-local coords. The
+     *  daemon's `convertXY` already translates panel coords to view-local
+     *  before delivery (per the d439fdd fix in the Mokke port), so no
+     *  offset subtraction is needed. */
+    private fun replayStrokeToBitmap(bmp: Bitmap) {
+        if (strokeBuffer.size < 2) return
+        val c = Canvas(bmp)
+        for (i in 1 until strokeBuffer.size) {
+            val a = strokeBuffer[i - 1]
+            val b = strokeBuffer[i]
+            c.drawLine(a.x, a.y, b.x, b.y, strokePaint)
+        }
     }
 
     private fun rebuildBitmap() {
@@ -145,7 +201,10 @@ class InkSurfaceView @JvmOverloads constructor(
             existing?.recycle()
             Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also { contentBitmap = it }
         }
-        Canvas(bmp).drawColor(Color.WHITE)
+        // Only clear to white when we just allocated a fresh bitmap. Reusing
+        // an existing bitmap means the strokes already painted into it must
+        // be preserved.
+        if (bmp !== existing) Canvas(bmp).drawColor(Color.WHITE)
     }
 
     private fun commitToSurface() {
@@ -156,7 +215,6 @@ class InkSurfaceView @JvmOverloads constructor(
         finally { holder.unlockCanvasAndPost(canvas) }
     }
 
-    /** True if any [InkController] is currently driving the ink overlay. */
     fun isOverlayActive(): Boolean = ink.isActive
 
     /** Inject a synthetic stroke for tests. Drives the public StrokeCallback. */

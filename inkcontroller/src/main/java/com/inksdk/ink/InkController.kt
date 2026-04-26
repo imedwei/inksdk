@@ -62,6 +62,49 @@ interface InkController {
      */
     fun syncOverlay(bitmap: Bitmap, region: Rect? = null, force: Boolean = false) = Unit
 
+    /** Copy the controller's current overlay contents into [target] so the
+     *  host can retain ink across surface refreshes (e.g. system-driven UI
+     *  composes that re-blit a stale SurfaceView buffer over the EPD region).
+     *
+     *  Pixel-perfect: there is no coordinate translation, so this is immune
+     *  to view-local vs window-local frame-of-reference mismatches.
+     *
+     *  Returns true if pixels were copied. Default is false — implementations
+     *  that don't expose their overlay buffer (Noop, Onyx, and Bigme on
+     *  firmware that returns null from `getContent()` and a hardware-backed
+     *  Canvas with no readable bitmap) leave this as a no-op and the host
+     *  should fall back to its own bitmap-mirroring path. */
+    fun mirrorOverlay(target: android.graphics.Bitmap): Boolean = false
+
+    /** Wipe the controller's overlay buffer over [region], **without**
+     *  triggering an EPD refresh.
+     *
+     *  Use case: the host has already painted the canonical post-stroke ink
+     *  into its own SurfaceView bitmap, so it doesn't need the controller's
+     *  transient overlay to keep showing the same stroke. Clearing the
+     *  controller buffer prevents two issues:
+     *
+     *  1. **Position shift between host and controller-rendered ink.** The
+     *     controller's overlay and the SurfaceView are composed through
+     *     different pipelines on Bigme (direct EPD vs SurfaceFlinger). With
+     *     both showing the same stroke they can land on slightly different
+     *     panel pixels — the host's "after-refresh shift" symptom. Wiping
+     *     the controller buffer leaves the SurfaceView as the sole source.
+     *
+     *  2. **Ghost accumulation.** The Bigme daemon's ION buffer never auto-
+     *     clears; old strokes pile up forever, and post-erase reuses of the
+     *     region show ghost trails of removed ink under fresh strokes.
+     *
+     *  This call must NOT call `inValidate` — the EPD's currently-displayed
+     *  pixels (drawn from this same buffer earlier) remain on screen via
+     *  the controller's prior commit. Default: no-op. */
+    fun clearRegion(region: android.graphics.Rect) = Unit
+
+    /** Reset any per-session diagnostic counters (stroke index, etc.) so
+     *  first-N-of-session logging fires again without needing to detach
+     *  and re-attach the controller. Default: no-op. */
+    fun resetDiagnostics() = Unit
+
     /** Detach — release the raw-drawing session. After this, [isActive] is
      *  false. [attach] must be called again to resume low-latency ink. */
     fun detach()

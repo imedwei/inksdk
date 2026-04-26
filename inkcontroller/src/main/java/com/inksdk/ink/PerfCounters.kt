@@ -5,33 +5,54 @@ package com.inksdk.ink
  * allocated ring buffer in [PerfCounters] indexed by [ordinal] — no HashMap
  * lookup on the hot path.
  *
- * The set is intentionally narrow: this library focuses on the daemon ink
- * path's down-to-paint latency. Hosts are free to record their own metrics
- * via [PerfCounters.recordDirect].
+ * Naming follows three tiers by sample rate:
+ *  - `pen.*`   — one sample per stroke (perceived first-paint latencies)
+ *  - `event.*` — one sample per binder input event (dispatch overhead)
+ *  - `paint.*` — one sample per draw segment (per MOVE)
+ *
+ * See `docs/metrics.md` and `docs/metrics-timeline.svg` for the timeline
+ * diagram and what each metric covers.
+ *
+ * The [label] is the metric's full name including [PerfCounters.prefix],
+ * so hosts can repurpose the names by setting `PerfCounters.prefix = "..."`
+ * once at startup.
  */
-enum class PerfMetric(val label: String) {
-    /** Canvas.drawLine into the daemon ION buffer (per MOVE event). */
-    INK_DAEMON_DRAW_LINE("ink.daemon.draw_line"),
+enum class PerfMetric(private val baseName: String) {
+    /** Wall-clock from kernel pen-down (daemon CLOCK_REALTIME ts) to first
+     *  inValidate returns. The headline first-paint metric. */
+    PEN_KERNEL_TO_PAINT("pen.kernel_to_paint"),
 
-    /** inValidate(rect, mode) round-trip into the daemon. */
-    INK_DAEMON_INVALIDATE("ink.daemon.invalidate"),
+    /** Wall-clock from kernel pen-down to DOWN event arriving in
+     *  InputProxy.invoke. DOWN-only subset of [EVENT_KERNEL_TO_JVM]. */
+    PEN_KERNEL_TO_JVM("pen.kernel_to_jvm"),
 
-    /** Whole InputProxy.invoke hot path (one event from binder). */
-    INK_DAEMON_INVOKE_TOTAL("ink.daemon.invoke_total"),
+    /** JVM-monotonic from DOWN landing in JVM to first inValidate returns. */
+    PEN_JVM_TO_PAINT("pen.jvm_to_paint"),
 
-    /** ACTION_DOWN → first inValidate. End-to-end first-paint latency. */
-    INK_DAEMON_DOWN_TO_PAINT("ink.daemon.down_to_paint"),
+    /** JVM-monotonic from DOWN landing in JVM to first MOVE landing in
+     *  JVM. Includes user pen-movement speed — not pure stack overhead. */
+    PEN_JVM_TO_FIRST_MOVE("pen.jvm_to_first_move"),
 
-    /** ACTION_DOWN → first ACTION_MOVE arrival. Kernel + daemon + binder
-     *  delivery + how long it took the user to start moving. */
-    INK_DAEMON_DOWN_TO_FIRST_MOVE("ink.daemon.down_to_first_move"),
+    /** First MOVE landing in JVM → first inValidate returns. Pure
+     *  JVM-side processing without user-input contamination. */
+    PEN_MOVE_TO_PAINT("pen.move_to_paint"),
 
-    /** First ACTION_MOVE arrival → first inValidate. Pure JVM-side processing. */
-    INK_DAEMON_FIRST_MOVE_TO_PAINT("ink.daemon.first_move_to_paint"),
+    /** Wall-clock from kernel input-event read (daemon CLOCK_REALTIME)
+     *  to InputProxy.invoke entry, recorded for every binder event. */
+    EVENT_KERNEL_TO_JVM("event.kernel_to_jvm"),
 
-    /** Daemon CLOCK_REALTIME timestamp → our InputProxy.invoke entry.
-     *  Kernel input-event read → binder → JVM dispatch delay. */
-    INK_DAEMON_DISPATCH_LATENCY("ink.daemon.dispatch_latency"),
+    /** Whole InputProxy.invoke wall time, recorded for every event. */
+    EVENT_HANDLER("event.handler"),
+
+    /** Canvas.drawLine into the daemon ION buffer, recorded per MOVE. */
+    PAINT_DRAW_SEGMENT("paint.draw_segment"),
+
+    /** inValidate(rect, mode) round-trip into the daemon, per call. */
+    PAINT_INVALIDATE_CALL("paint.invalidate_call"),
+    ;
+
+    /** Full metric name including the runtime [PerfCounters.prefix]. */
+    val label: String get() = "${PerfCounters.prefix}$baseName"
 }
 
 /**
@@ -42,10 +63,17 @@ enum class PerfMetric(val label: String) {
  * thread (binder thread, UI thread, etc).
  *
  * Percentiles are computed lazily by [snapshot] / [get].
+ *
+ * Hosts that want to merge these counters into their own perf system can
+ * override the [prefix] once at startup (e.g. `PerfCounters.prefix = "myapp.ink."`).
  */
 object PerfCounters {
 
     private const val WINDOW_SIZE = 200
+
+    /** Prefix prepended to every [PerfMetric.label]. Defaults to `"ink."`.
+     *  Set once at startup; not safe to mutate while metrics are being read. */
+    @Volatile var prefix: String = "ink."
 
     @PublishedApi
     internal val counters = Array(PerfMetric.entries.size) { RingCounter(WINDOW_SIZE) }
