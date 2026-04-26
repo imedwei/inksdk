@@ -1,0 +1,184 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">
+  <title>Bigme ink SDK architecture: from pen tip to EPD pixels</title>
+
+  <!-- Header -->
+  <text x="550" y="28" text-anchor="middle" font-size="18" font-weight="700" font-family="system-ui, Helvetica, sans-serif">Bigme ink SDK — pen tip to EPD pixels</text>
+  <text x="550" y="48" text-anchor="middle" font-size="12" fill="#666" font-family="system-ui, Helvetica, sans-serif">Two parallel lanes: input dispatch (left, blue) and paint delivery (right, orange).  ION buffer is the shared-memory bridge.</text>
+
+  <!-- ── Layer band labels (dimmed, vertical strip on left) ── -->
+  <g font-family="system-ui, Helvetica, sans-serif" font-size="11" fill="#888" font-weight="700">
+    <text x="22" y="100">HARDWARE</text>
+    <text x="22" y="190">KERNEL</text>
+    <text x="22" y="290">NATIVE (ROOT)</text>
+    <text x="22" y="430">FRAMEWORK</text>
+    <text x="22" y="540">APP PROCESS</text>
+    <text x="22" y="690">DISPLAY HAL</text>
+  </g>
+
+  <!-- Layer separator lines (very subtle) -->
+  <g stroke="#eee" stroke-width="1">
+    <line x1="120" y1="120" x2="1080" y2="120"/>
+    <line x1="120" y1="220" x2="1080" y2="220"/>
+    <line x1="120" y1="380" x2="1080" y2="380"/>
+    <line x1="120" y1="500" x2="1080" y2="500"/>
+    <line x1="120" y1="660" x2="1080" y2="660"/>
+  </g>
+
+  <!-- ── HARDWARE ROW ── -->
+  <g>
+    <!-- Pen tip / touch surface -->
+    <rect x="180" y="70" width="200" height="50" rx="6" fill="#fff" stroke="#333"/>
+    <text x="280" y="92" text-anchor="middle" font-weight="700">pen tip on glass</text>
+    <text x="280" y="108" text-anchor="middle" fill="#666" font-size="11">capacitive + EMR (Wacom-like)</text>
+
+    <!-- Touch IC -->
+    <rect x="430" y="70" width="220" height="50" rx="6" fill="#fff" stroke="#333"/>
+    <text x="540" y="92" text-anchor="middle" font-weight="700">Focal Tech fts_ts_pen</text>
+    <text x="540" y="108" text-anchor="middle" fill="#666" font-size="11">touch IC — sleeps after ~1–2 s idle</text>
+
+    <!-- E-ink panel (right) -->
+    <rect x="800" y="70" width="220" height="50" rx="6" fill="#fff" stroke="#333"/>
+    <text x="910" y="92" text-anchor="middle" font-weight="700">E-ink panel</text>
+    <text x="910" y="108" text-anchor="middle" fill="#666" font-size="11">~30 ms HANDWRITE waveform</text>
+  </g>
+
+  <!-- arrow: pen → touch IC -->
+  <line x1="380" y1="95" x2="430" y2="95" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+
+  <!-- arrow: touch IC → /dev/input -->
+  <line x1="540" y1="120" x2="540" y2="160" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+
+  <!-- ── KERNEL ROW ── -->
+  <g>
+    <rect x="430" y="160" width="220" height="50" rx="6" fill="#f4f9ff" stroke="#1e6dc6"/>
+    <text x="540" y="182" text-anchor="middle" font-weight="700" fill="#1e6dc6">/dev/input/event2</text>
+    <text x="540" y="198" text-anchor="middle" fill="#1e6dc6" font-size="11">kernel input event stream</text>
+  </g>
+
+  <!-- arrow: /dev/input → daemon -->
+  <line x1="540" y1="210" x2="540" y2="260" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+
+  <!-- ── NATIVE DAEMON ROW (large block — daemon owns multiple components) ── -->
+  <g>
+    <rect x="180" y="260" width="940" height="110" rx="8" fill="#fffaf3" stroke="#e67e22" stroke-width="1.5"/>
+    <text x="195" y="280" font-weight="700" fill="#e67e22">/system/bin/handwrittenservice (root)</text>
+    <text x="195" y="295" fill="#666" font-size="11">native daemon — registered binder service "handwrittenservice"</text>
+
+    <!-- Sub-blocks inside daemon: input reader / ION owner / EPD trigger -->
+    <rect x="260" y="310" width="200" height="50" rx="4" fill="#fff" stroke="#1e6dc6"/>
+    <text x="360" y="328" text-anchor="middle" font-weight="700" fill="#1e6dc6" font-size="12">input reader</text>
+    <text x="360" y="344" text-anchor="middle" fill="#1e6dc6" font-size="11">CLOCK_REALTIME ts</text>
+
+    <rect x="490" y="310" width="200" height="50" rx="4" fill="#fff" stroke="#666"/>
+    <text x="590" y="328" text-anchor="middle" font-weight="700" font-size="12">ION buffer owner</text>
+    <text x="590" y="344" text-anchor="middle" fill="#666" font-size="11">shared mem allocation</text>
+
+    <rect x="720" y="310" width="200" height="50" rx="4" fill="#fff" stroke="#e67e22"/>
+    <text x="820" y="328" text-anchor="middle" font-weight="700" fill="#e67e22" font-size="12">EPD trigger</text>
+    <text x="820" y="344" text-anchor="middle" fill="#e67e22" font-size="11">inValidate → HAL</text>
+  </g>
+
+  <!-- ── FRAMEWORK ROW (HandwrittenClient) ── -->
+  <g>
+    <rect x="180" y="400" width="940" height="80" rx="8" fill="#f1f5fb" stroke="#1e6dc6" stroke-width="1.5"/>
+    <text x="195" y="422" font-weight="700" fill="#1e6dc6">com.xrz.HandwrittenClient  (in framework.jar / classes5.dex, BOOTCLASSPATH-reachable)</text>
+    <text x="195" y="438" fill="#666" font-size="11">in-process wrapper — talks to daemon via binder; exposes Canvas + InputListener to host</text>
+
+    <text x="280" y="467" text-anchor="middle" font-size="11" fill="#1e6dc6">registerInputListener</text>
+    <text x="500" y="467" text-anchor="middle" font-size="11" fill="#666">getCanvas()</text>
+    <text x="720" y="467" text-anchor="middle" font-size="11" fill="#e67e22">inValidate(rect, mode)</text>
+    <text x="930" y="467" text-anchor="middle" font-size="11" fill="#666">bindView / connect</text>
+  </g>
+
+  <!-- daemon → framework arrows -->
+  <!-- input event → InputListener -->
+  <line x1="360" y1="370" x2="280" y2="400" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <text x="270" y="392" font-size="10" fill="#1e6dc6" text-anchor="end">binder dispatch</text>
+
+  <!-- ION buffer mmap'd into framework as Canvas -->
+  <line x1="590" y1="370" x2="500" y2="400" stroke="#666" stroke-width="2" marker-end="url(#arrowgrey)"/>
+  <text x="448" y="392" font-size="10" fill="#666" text-anchor="end">mmap shared mem</text>
+
+  <!-- Framework triggers daemon's EPD trigger via inValidate -->
+  <line x1="720" y1="400" x2="820" y2="370" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+  <text x="826" y="392" font-size="10" fill="#e67e22">binder call</text>
+
+  <!-- ── APP ROW (host) ── -->
+  <g>
+    <rect x="180" y="510" width="940" height="140" rx="8" fill="#fff" stroke="#333" stroke-width="1.5"/>
+    <text x="195" y="532" font-weight="700">App process (host activity)</text>
+    <text x="195" y="548" fill="#666" font-size="11">e.g. xNote, or this library's BigmeInkController via reflection</text>
+
+    <!-- App: InputProxy -->
+    <rect x="220" y="565" width="240" height="70" rx="4" fill="#f4f9ff" stroke="#1e6dc6"/>
+    <text x="340" y="585" text-anchor="middle" font-weight="700" fill="#1e6dc6" font-size="12">InputListener.onInputTouch</text>
+    <text x="340" y="603" text-anchor="middle" fill="#666" font-size="11">action, x, y, pressure, tool, time</text>
+    <text x="340" y="619" text-anchor="middle" fill="#1e6dc6" font-size="11">runs on binder thread</text>
+
+    <!-- App: paint into Canvas -->
+    <rect x="500" y="565" width="240" height="70" rx="4" fill="#fff" stroke="#666"/>
+    <text x="620" y="585" text-anchor="middle" font-weight="700" font-size="12">Canvas.drawLine(...)</text>
+    <text x="620" y="603" text-anchor="middle" fill="#666" font-size="11">writes into ION shared mem</text>
+    <text x="620" y="619" text-anchor="middle" fill="#666" font-size="11">memcpy, not SurfaceFlinger</text>
+
+    <!-- App: invalidate to push to EPD -->
+    <rect x="780" y="565" width="240" height="70" rx="4" fill="#fff8ef" stroke="#e67e22"/>
+    <text x="900" y="585" text-anchor="middle" font-weight="700" fill="#e67e22" font-size="12">client.inValidate(rect, MODE_HANDWRITE)</text>
+    <text x="900" y="603" text-anchor="middle" fill="#666" font-size="11">pushes refresh request to EPD</text>
+    <text x="900" y="619" text-anchor="middle" fill="#e67e22" font-size="11">throttled to ~16 ms (vsync)</text>
+  </g>
+
+  <!-- Framework → app arrows -->
+  <line x1="280" y1="480" x2="280" y2="565" stroke="#1e6dc6" stroke-width="2" marker-end="url(#arrowblue)"/>
+  <line x1="500" y1="480" x2="500" y2="565" stroke="#666" stroke-width="2" marker-end="url(#arrowgrey)"/>
+  <line x1="720" y1="565" x2="720" y2="480" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+
+  <!-- App-side flow: input → paint → invalidate (within app block) -->
+  <line x1="460" y1="600" x2="500" y2="600" stroke="#999" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arrowdash)"/>
+  <line x1="740" y1="600" x2="780" y2="600" stroke="#999" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arrowdash)"/>
+
+  <!-- ── DISPLAY HAL ROW ── -->
+  <g>
+    <rect x="650" y="680" width="370" height="60" rx="6" fill="#fff8ef" stroke="#e67e22"/>
+    <text x="835" y="702" text-anchor="middle" font-weight="700" fill="#e67e22">EPD HAL → waveform engine → panel</text>
+    <text x="835" y="718" text-anchor="middle" fill="#666" font-size="11">selects waveform (HANDWRITE / GU16 / GC16); drives panel pixels</text>
+  </g>
+
+  <!-- daemon EPD trigger → HAL (long arrow) -->
+  <line x1="820" y1="360" x2="820" y2="680" stroke="#e67e22" stroke-width="2" marker-end="url(#arrowor)"/>
+
+  <!-- HAL → panel (right edge, going up) -->
+  <path d="M 1020 690 Q 1080 690 1080 130 L 1020 95" stroke="#e67e22" stroke-width="2" fill="none" marker-end="url(#arrowor)"/>
+
+  <!-- SurfaceFlinger side note -->
+  <g>
+    <rect x="180" y="680" width="430" height="60" rx="6" fill="#f5f5f5" stroke="#bbb" stroke-dasharray="4 3"/>
+    <text x="395" y="702" text-anchor="middle" font-weight="700" fill="#666">SurfaceFlinger compose path (independent)</text>
+    <text x="395" y="718" text-anchor="middle" fill="#888" font-size="11">view tree → SurfaceView → EPD; coexists with daemon overlay above</text>
+  </g>
+
+  <!-- Arrow defs -->
+  <defs>
+    <marker id="arrowblue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e6dc6"/>
+    </marker>
+    <marker id="arrowor" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e67e22"/>
+    </marker>
+    <marker id="arrowgrey" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#666"/>
+    </marker>
+    <marker id="arrowdash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#999"/>
+    </marker>
+  </defs>
+
+  <!-- Legend -->
+  <g font-family="system-ui, Helvetica, sans-serif" font-size="11">
+    <rect x="40" y="700" width="120" height="40" fill="white" stroke="#ddd"/>
+    <line x1="50" y1="712" x2="80" y2="712" stroke="#1e6dc6" stroke-width="2"/>
+    <text x="86" y="716" fill="#1e6dc6">input lane</text>
+    <line x1="50" y1="728" x2="80" y2="728" stroke="#e67e22" stroke-width="2"/>
+    <text x="86" y="732" fill="#e67e22">paint lane</text>
+  </g>
+</svg>
