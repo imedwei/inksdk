@@ -12,32 +12,11 @@ The library, [`inksdk`](..), exposes one Kotlin interface — `InkController` �
 
 ## tl;dr — the shape of the difference
 
-```
-                 BIGME                         ONYX
-                 ─────                         ────
- ink path        xrz daemon (root)             TouchHelper.so (in-process)
-                 │                             │
-                 ION buffer + Canvas           SurfaceView raw drawing
-                 (separate compositor)         (TouchHelper owns surface)
-                 │                             │
-                 invalidate(rect, mode)        SDK paints natively
-                 → EPD waveform queue          → EPD waveform queue
-                 ↑                             ↑
-                 SurfaceFlinger composes       (waveform queue monopolised)
-                 also feed this queue          while raw drawing is enabled
-                 ← contention!                 ← no contention; UI deferred
-
- input dispatch  binder thread                 main thread
- timestamp epoch CLOCK_REALTIME (wall ns)      System.currentTimeMillis (wall ms)
- paint observable yes (we invalidate)          no (vendor SDK paints)
- metrics recordable 9 / 9                      4 / 9
-```
-
-Both devices give you fast ink. The mechanisms diverge enough that "the same library code" doesn't get you there — the host has to know which compositor model it's working under.
-
 ![Bigme vs Onyx ink architectures, side by side](eink-pen-architectures.svg)
 
 [Source: `eink-pen-architectures.svg`](eink-pen-architectures.svg). Six layers (hardware → kernel → native → framework → app → display HAL) drawn for both vendors at the same vertical positions, so the boundaries between vendor and host become visible at a glance: Bigme's daemon owns input + ION buffer + EPD trigger and hands the host a real Canvas to paint into; Onyx's in-process SDK owns the SurfaceView and paints natively, leaving the host as a passive observer of the `RawInputCallback`.
+
+Both devices give you fast ink. The mechanisms diverge enough that "the same library code" doesn't get you there — the host has to know which compositor model it's working under. The full per-property comparison (input thread, surface model, paint observability, metric coverage, perf-pathology magnitudes) is in the [Side by side](#side-by-side) table further down.
 
 ---
 
