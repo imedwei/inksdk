@@ -1,0 +1,17 @@
+# Normalize text files to LF in the repo; working-tree eol is LF on
+# Linux/macOS and (via core.autocrlf) on Windows when this file is absent.
+# Declaring it explicitly prevents per-checkout drift across contributors.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF in the working tree.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Binary formats — never line-ending-mangle.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.jar   binary
+*.apk   binary
+*.keystore binary
