@@ -77,6 +77,24 @@ PerfCounters.prefix = "myapp.ink."
 
 Set to `""` to drop the prefix entirely.
 
+### Routing measurements into a host perf system
+
+If your app already has its own perf-counter system, install a [`PerfSink`]
+at startup to route every measurement into it — no polling, no enum coupling,
+no separate ring buffer. The host sink only sees label strings, so adding
+or renaming an inksdk metric never breaks the host:
+
+```kotlin
+PerfCounters.sink = PerfSink { label, elapsedNanos ->
+    MyAppCounters.recordByLabel(label, elapsedNanos)
+}
+```
+
+After replacement, `PerfCounters.snapshot()` / `get()` / `reset()` see only
+the (now empty) default ring buffer — your app sink owns snapshotting. The
+default sink remains in place if you don't replace it, so existing consumers
+of `snapshot()` keep working unchanged.
+
 ### Per-controller coverage
 
 `paint.*` and the paint-side `pen.*` metrics rely on a JVM-side "first

@@ -2,8 +2,8 @@ package com.inksdk.ink
 
 /**
  * Performance metrics recorded by the ink pipeline. Each maps to a pre-
- * allocated ring buffer in [PerfCounters] indexed by [ordinal] — no HashMap
- * lookup on the hot path.
+ * allocated ring buffer in [DefaultSink] indexed by [ordinal] — no HashMap
+ * lookup on the hot path when the default sink is in use.
  *
  * Naming follows three tiers by sample rate:
  *  - `pen.*`   — one sample per stroke (perceived first-paint latencies)
@@ -56,38 +56,98 @@ enum class PerfMetric(private val baseName: String) {
 }
 
 /**
+ * Sink for ink-pipeline timing measurements. Each [record] call delivers
+ * one labelled timing sample.
+ *
+ * The default sink ([DefaultSink]) is an in-process ring buffer served by
+ * [PerfCounters.snapshot]/[PerfCounters.get]/[PerfCounters.reset]. Hosts
+ * that already have a perf system can replace [PerfCounters.sink] at startup
+ * to route every measurement into it — no polling, no enum coupling, no
+ * separate ring buffer.
+ *
+ * `metricLabel` is the full [PerfMetric.label] (with [PerfCounters.prefix]
+ * applied), so a host sink can route purely by string and never imports
+ * the [PerfMetric] enum.
+ */
+fun interface PerfSink {
+    fun record(metricLabel: String, elapsedNanos: Long)
+}
+
+/**
  * Zero-allocation hot-path performance counters.
  *
- * Each [PerfMetric] gets a ring buffer of the last [WINDOW_SIZE] timings.
- * [recordDirect] is one synchronized array write — safe to call from any
- * thread (binder thread, UI thread, etc).
- *
- * Percentiles are computed lazily by [snapshot] / [get].
- *
- * Hosts that want to merge these counters into their own perf system can
- * override the [prefix] once at startup (e.g. `PerfCounters.prefix = "myapp.ink."`).
+ * By default routes to [DefaultSink] (a ring-buffer per [PerfMetric] served
+ * by [snapshot]/[get]/[reset]). Replace [sink] at startup to route into a
+ * host perf system instead — after replacement, the polling APIs return
+ * empty results because nothing populates the default ring buffer.
  */
 object PerfCounters {
-
-    private const val WINDOW_SIZE = 200
 
     /** Prefix prepended to every [PerfMetric.label]. Defaults to `"ink."`.
      *  Set once at startup; not safe to mutate while metrics are being read. */
     @Volatile var prefix: String = "ink."
 
-    @PublishedApi
-    internal val counters = Array(PerfMetric.entries.size) { RingCounter(WINDOW_SIZE) }
+    /** Where every measurement goes. Defaults to [DefaultSink]; hosts can
+     *  replace at startup to route into their own perf system. After
+     *  replacement, [snapshot]/[get]/[reset] become no-op-ish (they only
+     *  see the default ring buffer, which no longer receives writes). */
+    @Volatile var sink: PerfSink = DefaultSink
 
     /** Time a block and record the elapsed nanos. Returns the block result. */
     inline fun <T> time(metric: PerfMetric, block: () -> T): T {
-        val start = System.nanoTime()
-        val result = block()
-        counters[metric.ordinal].record(System.nanoTime() - start)
-        return result
+        val t0 = System.nanoTime()
+        return try {
+            block()
+        } finally {
+            recordDirect(metric, System.nanoTime() - t0)
+        }
     }
 
     /** Record an externally-measured nanos value (e.g. cross-clock latency). */
     fun recordDirect(metric: PerfMetric, elapsedNanos: Long) {
+        // Fast path: when the default sink is installed, skip the label
+        // round-trip and write to the ordinal-indexed ring directly.
+        val s = sink
+        if (s === DefaultSink) {
+            DefaultSink.recordTyped(metric, elapsedNanos)
+        } else {
+            s.record(metric.label, elapsedNanos)
+        }
+    }
+
+    fun get(metric: PerfMetric): CounterSnapshot = DefaultSink.get(metric)
+
+    fun snapshot(): Map<PerfMetric, CounterSnapshot> = DefaultSink.snapshot()
+
+    fun reset() = DefaultSink.reset()
+}
+
+/**
+ * Default sink — an ordinal-indexed ring buffer per [PerfMetric].
+ *
+ * Hosts that don't replace [PerfCounters.sink] consume it via
+ * [PerfCounters.snapshot]/[PerfCounters.get]/[PerfCounters.reset]. Hosts
+ * that *do* install a custom sink leave this object empty.
+ */
+object DefaultSink : PerfSink {
+
+    private const val WINDOW_SIZE = 200
+
+    private val counters = Array(PerfMetric.entries.size) { RingCounter(WINDOW_SIZE) }
+
+    private val labelToMetric: Map<String, PerfMetric> by lazy {
+        PerfMetric.entries.associateBy { it.label }
+    }
+
+    /** [PerfSink] entry point — a host that installs another sink AND
+     *  also calls back into [DefaultSink.record] (for tests, mostly) ends
+     *  up here; we resolve the label back to a [PerfMetric] if known. */
+    override fun record(metricLabel: String, elapsedNanos: Long) {
+        labelToMetric[metricLabel]?.let { counters[it.ordinal].record(elapsedNanos) }
+    }
+
+    /** Hot path for the in-process default route. Skips the string lookup. */
+    internal fun recordTyped(metric: PerfMetric, elapsedNanos: Long) {
         counters[metric.ordinal].record(elapsedNanos)
     }
 

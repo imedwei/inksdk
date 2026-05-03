@@ -9,6 +9,7 @@ class PerfCountersTest {
 
     @After
     fun tearDown() {
+        PerfCounters.sink = DefaultSink
         PerfCounters.reset()
         PerfCounters.prefix = "ink."
     }
@@ -80,6 +81,51 @@ class PerfCountersTest {
         // Empty prefix is honoured (no namespace at all).
         PerfCounters.prefix = ""
         assertEquals("pen.kernel_to_paint", PerfMetric.PEN_KERNEL_TO_PAINT.label)
+    }
+
+    @Test
+    fun installedSinkReceivesRecordingsWithFullLabels() {
+        val received = mutableListOf<Pair<String, Long>>()
+        PerfCounters.sink = PerfSink { label, nanos -> received += label to nanos }
+
+        PerfCounters.recordDirect(PerfMetric.PEN_KERNEL_TO_PAINT, 5_000_000L)
+        PerfCounters.time(PerfMetric.EVENT_HANDLER) { /* no-op */ }
+
+        assertEquals(2, received.size)
+        assertEquals("ink.pen.kernel_to_paint", received[0].first)
+        assertEquals(5_000_000L, received[0].second)
+        assertEquals("ink.event.handler", received[1].first)
+        assertTrue("non-negative elapsed", received[1].second >= 0L)
+    }
+
+    @Test
+    fun installedSinkReceivesPrefixedLabels() {
+        PerfCounters.prefix = "myapp.ink."
+        val received = mutableListOf<String>()
+        PerfCounters.sink = PerfSink { label, _ -> received += label }
+
+        PerfCounters.recordDirect(PerfMetric.PAINT_DRAW_SEGMENT, 1_000L)
+        assertEquals("myapp.ink.paint.draw_segment", received.single())
+    }
+
+    @Test
+    fun pollingApisReturnEmptyAfterSinkReplaced() {
+        // After installing a custom sink, the default ring buffer never sees
+        // recordings — snapshot/get/reset operate against the default sink
+        // and so report empty. This is the documented contract: a host that
+        // takes ownership of recording also owns its own snapshot.
+        PerfCounters.sink = PerfSink { _, _ -> /* swallow */ }
+        PerfCounters.recordDirect(PerfMetric.PEN_KERNEL_TO_PAINT, 5_000_000L)
+
+        assertEquals(0L, PerfCounters.get(PerfMetric.PEN_KERNEL_TO_PAINT).count)
+        assertTrue(PerfCounters.snapshot().values.all { it.count == 0L })
+    }
+
+    @Test
+    fun defaultSinkIsBackwardCompatible() {
+        // No sink replacement — the existing API contract holds.
+        PerfCounters.recordDirect(PerfMetric.PEN_KERNEL_TO_PAINT, 5_000_000L)
+        assertEquals(1L, PerfCounters.get(PerfMetric.PEN_KERNEL_TO_PAINT).count)
     }
 
     @Test
