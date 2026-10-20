@@ -9,4 +9,11 @@ import android.graphics.Color
 object InkDefaults {
     const val DEFAULT_STROKE_WIDTH_PX: Float = 5f
     const val DEFAULT_STROKE_COLOR: Int = Color.BLACK
+
+    /** Shared live/replay pressure curve: 0.3x to 2x of the base width. */
+    fun pressureToWidth(baseWidthPx: Float, pressure: Float): Float =
+        baseWidthPx * (0.3f + 1.7f * pressure.coerceIn(0f, 1f))
+
+    /** Surface-pixel dash pattern for selection trails. */
+    fun dashIntervals(): FloatArray = floatArrayOf(16f, 24f)
 }

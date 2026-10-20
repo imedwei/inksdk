@@ -22,6 +22,9 @@ object InkControllerFactory {
         if (BigmeInkController.isBigmeDevice()) BigmeInkController()
         else OnyxInkController()
 
+    /** Opt-in public Android stylus path; vendor auto-selection remains unchanged. */
+    fun createStandard(): InkEditingController = StandardInkController()
+
     fun createNoop(): InkController = NoopInkController
 
     /** True iff the current device is identified as a Bigme device. */
