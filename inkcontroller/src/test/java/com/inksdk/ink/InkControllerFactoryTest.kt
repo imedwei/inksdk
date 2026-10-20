@@ -17,6 +17,15 @@ import org.robolectric.util.ReflectionHelpers
 class InkControllerFactoryTest {
 
     @Test
+    fun createStandardIsOptInAndInitiallyInactive() {
+        val controller = InkControllerFactory.createStandard()
+        assertTrue(controller is StandardInkController)
+        assertFalse(controller.isActive)
+        assertFalse(controller.consumesMotionEvents)
+        assertFalse(controller.ownsSurface)
+    }
+
+    @Test
     fun createNoopAlwaysReturnsTheSingleton() {
         assertSame(NoopInkController, InkControllerFactory.createNoop())
     }

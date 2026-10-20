@@ -137,3 +137,47 @@ devices.
   firmware, e.g. HiBreak Plus). Reflective; no permission needed.
 - **Onyx**: requires the Boox vendor SDK runtime. The class load succeeds on
   any device but `attach` throws on non-Onyx and we return false.
+
+## Optional standard Android controller
+
+`InkControllerFactory.createStandard()` provides a public-API stylus implementation
+for tablets without a vendor overlay. It is opt-in: `create()` still selects the
+existing Bigme/Onyx implementations, and `createNoop()` is unchanged. This path uses
+ordinary SurfaceView composition and makes no hardware-overlay latency guarantee.
+
+```kotlin
+val ink = InkControllerFactory.createStandard()
+// Call from SurfaceHolder.Callback after layout, when the surface is valid.
+ink.attach(surfaceView, Rect(0, 0, surfaceView.width, surfaceView.height), callback)
+ink.setStrokeStyle(widthPx = 5f, color = Color.BLACK)
+// Supply the authoritative page before writing and after host document edits.
+ink.syncOverlay(pageBitmap)
+```
+
+The controller installs an OnTouchListener on the attached SurfaceView. Do not
+also forward the same events manually. NativeActivity hosts that bypass View
+dispatch may instead call `onMotionEvent` once per event. Input, presentation and
+configuration belong on the main thread. Detach before the surface is destroyed.
+The host owns document persistence, undo, scrolling and eraser behavior.
+
+- Stylus input is captured; finger and eraser contacts are not consumed. This does
+  not itself dispatch touches to sibling views: the host chooses their routing.
+- Coalesced historical points are delivered in order. Presentations are batched
+  per MotionEvent, including the final UP segment.
+- Writing bounds and exclusions prevent control contacts from becoming ink.
+  `setExcludedPenTouch` can route excluded pen contacts to host controls.
+- `setCaptureOnly` or `setCaptureOnlyAt` delivers gestures without painting them,
+  allowing host-owned selection, checkboxes and erasing without a temporary dot.
+- `syncOverlay` replaces authoritative pixels, including transparent pixels;
+  `syncChrome` updates a cropped control area without clearing the page.
+- Call `setEnabled(false)` before host redraws. The current stroke is completed
+  once. Size changes require reattachment and a fresh authoritative bitmap.
+- Recorded timings are handler/draw/presentation-call durations, not measured
+  kernel-to-panel latency. Unit tests do not establish palm rejection or e-ink
+  refresh behavior; device acceptance remains necessary.
+
+This contribution is adapted from [Kalamos InkSDK](https://github.com/josephm1/kalamos-inksdk),
+which builds on **InkSDK by Ed Wei (imedwei) and contributors**. The new standard
+controller, editing interface and their test are contributed under GPL-3.0-only;
+see [docs/standard-android-NOTICE.md](docs/standard-android-NOTICE.md). Existing
+upstream files retain their authorship and licensing status.
